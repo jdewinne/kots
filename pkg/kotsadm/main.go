@@ -16,6 +16,7 @@ import (
 	"github.com/replicatedhq/kots/pkg/ingress"
 	"github.com/replicatedhq/kots/pkg/k8sutil"
 	"github.com/replicatedhq/kots/pkg/kotsadm/types"
+	"github.com/replicatedhq/kots/pkg/kotsutil"
 	"github.com/replicatedhq/kots/pkg/logger"
 	corev1 "k8s.io/api/core/v1"
 	kuberneteserrors "k8s.io/apimachinery/pkg/api/errors"
@@ -243,7 +244,7 @@ func IsKurl(k8sConfigFlags *genericclioptions.ConfigFlags) (bool, error) {
 		return false, errors.Wrap(err, "failed to get clientset")
 	}
 
-	return isKurl(clientset), nil
+	return kotsutil.IsKurl(clientset), nil
 }
 
 func canUpgrade(upgradeOptions types.UpgradeOptions, clientset *kubernetes.Clientset, log *logger.Logger) error {
@@ -262,20 +263,11 @@ func canUpgrade(upgradeOptions types.UpgradeOptions, clientset *kubernetes.Clien
 		return nil
 	}
 
-	if isKurl(clientset) {
+	if kotsutil.IsKurl(clientset) {
 		return errors.New("upgrading kURL clusters is not supported")
 	}
 
 	return nil
-}
-
-func isKurl(clientset *kubernetes.Clientset) bool {
-	_, err := clientset.CoreV1().ConfigMaps("kube-system").Get(context.TODO(), "kurl-config", metav1.GetOptions{})
-	if err != nil {
-		return false
-	}
-
-	return true
 }
 
 func removeUnusedKotsadmComponents(deployOptions types.DeployOptions, clientset *kubernetes.Clientset, log *logger.Logger) error {

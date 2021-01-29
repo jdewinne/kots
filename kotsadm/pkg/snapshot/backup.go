@@ -18,6 +18,7 @@ import (
 	"github.com/replicatedhq/kots/kotsadm/pkg/kurl"
 	"github.com/replicatedhq/kots/kotsadm/pkg/logger"
 	"github.com/replicatedhq/kots/kotsadm/pkg/render/helper"
+	kotssnapshot "github.com/replicatedhq/kots/pkg/snapshot"
 	"github.com/replicatedhq/kots/kotsadm/pkg/snapshot/types"
 	"github.com/replicatedhq/kots/kotsadm/pkg/store"
 	downstreamtypes "github.com/replicatedhq/kots/pkg/api/downstream/types"
@@ -64,7 +65,7 @@ func CreateApplicationBackup(ctx context.Context, a *apptypes.App, isScheduled b
 		return nil, errors.Wrap(err, "failed to get app version archive")
 	}
 
-	kotsadmVeleroBackendStorageLocation, err := FindBackupStoreLocation()
+	kotsadmVeleroBackendStorageLocation, err := kotssnapshot.FindBackupStoreLocation()
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to find backupstoragelocations")
 	}
@@ -238,7 +239,7 @@ func CreateInstanceBackup(ctx context.Context, cluster *downstreamtypes.Downstre
 		includedNamespaces = append(includedNamespaces, "kurl")
 	}
 
-	kotsadmVeleroBackendStorageLocation, err := FindBackupStoreLocation()
+	kotsadmVeleroBackendStorageLocation, err := kotssnapshot.FindBackupStoreLocation()
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to find backupstoragelocations")
 	}
@@ -328,7 +329,7 @@ func ListBackupsForApp(appID string) ([]*types.Backup, error) {
 		return nil, errors.Wrap(err, "failed to create clientset")
 	}
 
-	backendStorageLocation, err := FindBackupStoreLocation()
+	backendStorageLocation, err := kotssnapshot.FindBackupStoreLocation()
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to find backupstoragelocations")
 	}
@@ -452,7 +453,7 @@ func ListInstanceBackups() ([]*types.Backup, error) {
 		return nil, errors.Wrap(err, "failed to create clientset")
 	}
 
-	backendStorageLocation, err := FindBackupStoreLocation()
+	backendStorageLocation, err := kotssnapshot.FindBackupStoreLocation()
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to find backupstoragelocations")
 	}
@@ -469,6 +470,8 @@ func ListInstanceBackups() ([]*types.Backup, error) {
 		if veleroBackup.Annotations["kots.io/instance"] != "true" {
 			continue
 		}
+
+		// TODO: list for 1 namespace only
 
 		backup := types.Backup{
 			Name:   veleroBackup.Name,
@@ -585,7 +588,7 @@ func getSnapshotVolumeSummary(ctx context.Context, veleroBackup *velerov1.Backup
 }
 
 func GetBackup(snapshotName string) (*velerov1.Backup, error) {
-	bsl, err := FindBackupStoreLocation()
+	bsl, err := kotssnapshot.FindBackupStoreLocation()
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to get velero namespace")
 	}
@@ -612,7 +615,7 @@ func GetBackup(snapshotName string) (*velerov1.Backup, error) {
 }
 
 func DeleteBackup(snapshotName string) error {
-	bsl, err := FindBackupStoreLocation()
+	bsl, err := kotssnapshot.FindBackupStoreLocation()
 	if err != nil {
 		return errors.Wrap(err, "failed to get velero namespace")
 	}
@@ -687,7 +690,7 @@ func GetBackupDetail(ctx context.Context, backupName string) (*types.BackupDetai
 		return nil, errors.Wrap(err, "failed to create clientset")
 	}
 
-	backendStorageLocation, err := FindBackupStoreLocation()
+	backendStorageLocation, err := kotssnapshot.FindBackupStoreLocation()
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to find backupstoragelocations")
 	}

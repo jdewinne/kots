@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/replicatedhq/kots/kotsadm/pkg/logger"
+	kotssnapshot "github.com/replicatedhq/kots/pkg/snapshot"
 	"github.com/replicatedhq/kots/kotsadm/pkg/snapshot"
 	"github.com/replicatedhq/kots/kotsadm/pkg/store"
 )
@@ -32,7 +33,7 @@ func (h *Handler) Ping(w http.ResponseWriter, r *http.Request) {
 }
 
 func snapshotProgress(slugs []string, pingResponse *PingResponse) {
-	veleroStatus, err := snapshot.DetectVelero()
+	veleroStatus, err := kotssnapshot.DetectVelero()
 	if err != nil {
 		logger.Error(err)
 		pingResponse.Error = "failed to detect velero"

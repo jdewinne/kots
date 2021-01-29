@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -21,13 +22,11 @@ import (
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/pkg/errors"
-	"github.com/replicatedhq/kots/kotsadm/pkg/kurl"
-	"github.com/replicatedhq/kots/kotsadm/pkg/logger"
-	"github.com/replicatedhq/kots/kotsadm/pkg/snapshot/providers"
-	"github.com/replicatedhq/kots/kotsadm/pkg/snapshot/types"
+	"github.com/replicatedhq/kots/pkg/kotsutil"
+	"github.com/replicatedhq/kots/pkg/snapshot/providers"
+	"github.com/replicatedhq/kots/pkg/snapshot/types"
 	velerov1 "github.com/vmware-tanzu/velero/pkg/apis/velero/v1"
 	veleroclientv1 "github.com/vmware-tanzu/velero/pkg/generated/clientset/versioned/typed/velero/v1"
-	"go.uber.org/zap"
 	"google.golang.org/api/option"
 	"gopkg.in/ini.v1"
 	corev1 "k8s.io/api/core/v1"
@@ -36,6 +35,286 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/controller-runtime/pkg/client/config"
 )
+
+type ConfigureStoreOptions struct {
+	Provider string
+	Bucket   string
+	Path     string
+
+	AWS      *types.StoreAWS
+	Google   *types.StoreGoogle
+	Azure    *types.StoreAzure
+	Other    *types.StoreOther
+	Internal bool
+	NFS      bool
+
+	KOTSNamespace string
+}
+
+type InvalidStoreDataError struct {
+	Message string
+}
+
+func (e *InvalidStoreDataError) Error() string {
+	return e.Message
+}
+
+func ConfigureStore(options ConfigureStoreOptions) (*types.Store, error) {
+	store, err := GetGlobalStore(nil)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to get store")
+	}
+
+	store.Provider = options.Provider
+	store.Bucket = options.Bucket
+	store.Path = options.Path
+
+	if options.AWS != nil {
+		if store.AWS == nil {
+			store.AWS = &types.StoreAWS{}
+		}
+		store.Azure = nil
+		store.Google = nil
+		store.Other = nil
+		store.Internal = nil
+		store.NFS = nil
+
+		store.AWS.UseInstanceRole = options.AWS.UseInstanceRole
+		if store.AWS.UseInstanceRole {
+			store.AWS.AccessKeyID = ""
+			store.AWS.SecretAccessKey = ""
+		} else {
+			if options.AWS.AccessKeyID != "" {
+				store.AWS.AccessKeyID = options.AWS.AccessKeyID
+			}
+			if options.AWS.SecretAccessKey != "" {
+				if strings.Contains(options.AWS.SecretAccessKey, "REDACTED") {
+					return nil, &InvalidStoreDataError{Message: "invalid aws secret access key"}
+				}
+				store.AWS.SecretAccessKey = options.AWS.SecretAccessKey
+			}
+			if options.AWS.Region != "" {
+				store.AWS.Region = options.AWS.Region
+			}
+		}
+
+		if !store.AWS.UseInstanceRole {
+			if store.AWS.AccessKeyID == "" || store.AWS.SecretAccessKey == "" || store.AWS.Region == "" {
+				return nil, &InvalidStoreDataError{Message: "missing access key id and/or secret access key and/or region"}
+			}
+		}
+	} else if options.Google != nil {
+		if store.Google == nil {
+			store.Google = &types.StoreGoogle{}
+		}
+		store.AWS = nil
+		store.Azure = nil
+		store.Other = nil
+		store.Internal = nil
+		store.NFS = nil
+
+		store.Google.UseInstanceRole = options.Google.UseInstanceRole
+		if store.Google.UseInstanceRole {
+			store.Google.JSONFile = ""
+			if options.Google.ServiceAccount != "" {
+				store.Google.ServiceAccount = options.Google.ServiceAccount
+			}
+		} else {
+			if options.Google.JSONFile != "" {
+				if strings.Contains(options.Google.JSONFile, "REDACTED") {
+					return nil, &InvalidStoreDataError{Message: "invalid JSON file"}
+				}
+				store.Google.JSONFile = options.Google.JSONFile
+			}
+		}
+
+		if store.Google.UseInstanceRole {
+			if store.Google.ServiceAccount == "" {
+				return nil, &InvalidStoreDataError{Message: "missing service account"}
+			}
+		} else {
+			if store.Google.JSONFile == "" {
+				return nil, &InvalidStoreDataError{Message: "missing JSON file"}
+			}
+		}
+
+	} else if options.Azure != nil {
+		if store.Azure == nil {
+			store.Azure = &types.StoreAzure{}
+		}
+		store.AWS = nil
+		store.Google = nil
+		store.Other = nil
+		store.Internal = nil
+		store.NFS = nil
+
+		if options.Azure.ResourceGroup != "" {
+			store.Azure.ResourceGroup = options.Azure.ResourceGroup
+		}
+		if options.Azure.SubscriptionID != "" {
+			store.Azure.SubscriptionID = options.Azure.SubscriptionID
+		}
+		if options.Azure.TenantID != "" {
+			store.Azure.TenantID = options.Azure.TenantID
+		}
+		if options.Azure.ClientID != "" {
+			store.Azure.ClientID = options.Azure.ClientID
+		}
+		if options.Azure.ClientSecret != "" {
+			if strings.Contains(options.Azure.ClientSecret, "REDACTED") {
+				return nil, &InvalidStoreDataError{Message: "invalid client secret"}
+			}
+			store.Azure.ClientSecret = options.Azure.ClientSecret
+		}
+		if options.Azure.CloudName != "" {
+			store.Azure.CloudName = options.Azure.CloudName
+		}
+		if options.Azure.StorageAccount != "" {
+			store.Azure.StorageAccount = options.Azure.StorageAccount
+		}
+
+	} else if options.Other != nil {
+		if store.Other == nil {
+			store.Other = &types.StoreOther{}
+		}
+		store.AWS = nil
+		store.Google = nil
+		store.Azure = nil
+		store.Internal = nil
+		store.NFS = nil
+
+		store.Provider = "aws"
+		if options.Other.AccessKeyID != "" {
+			store.Other.AccessKeyID = options.Other.AccessKeyID
+		}
+		if options.Other.SecretAccessKey != "" {
+			if strings.Contains(options.Other.SecretAccessKey, "REDACTED") {
+				return nil, &InvalidStoreDataError{Message: "invalid secret access key"}
+			}
+			store.Other.SecretAccessKey = options.Other.SecretAccessKey
+		}
+		if options.Other.Region != "" {
+			store.Other.Region = options.Other.Region
+		}
+		if options.Other.Endpoint != "" {
+			store.Other.Endpoint = options.Other.Endpoint
+		}
+
+		if store.Other.AccessKeyID == "" || store.Other.SecretAccessKey == "" || store.Other.Endpoint == "" || store.Other.Region == "" {
+			return nil, &InvalidStoreDataError{Message: "access key, secret key, endpoint and region are required"}
+		}
+	} else if options.Internal {
+		cfg, err := config.GetConfig()
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to get cluster config")
+		}
+
+		clientset, err := kubernetes.NewForConfig(cfg)
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to create clientset")
+		}
+
+		if !kotsutil.IsKurl(clientset) {
+			return nil, &InvalidStoreDataError{Message: "cannot use internal storage on a non-kurl cluster"}
+		}
+
+		if store.Internal == nil {
+			store.Internal = &types.StoreInternal{}
+		}
+		store.AWS = nil
+		store.Google = nil
+		store.Azure = nil
+		store.Other = nil
+		store.NFS = nil
+
+		secret, err := kotsutil.GetKurlS3Secret()
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to get s3 secret")
+		}
+		if secret == nil {
+			return nil, errors.New("s3 secret does not exist")
+		}
+
+		store.Provider = "aws"
+		store.Bucket = string(secret.Data["velero-local-bucket"])
+		store.Path = ""
+
+		store.Internal.AccessKeyID = string(secret.Data["access-key-id"])
+		store.Internal.SecretAccessKey = string(secret.Data["secret-access-key"])
+		store.Internal.Endpoint = string(secret.Data["endpoint"])
+		store.Internal.ObjectStoreClusterIP = string(secret.Data["object-store-cluster-ip"])
+		store.Internal.Region = "us-east-1"
+
+	} else if options.NFS {
+		cfg, err := config.GetConfig()
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to get cluster config")
+		}
+
+		clientset, err := kubernetes.NewForConfig(cfg)
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to create clientset")
+		}
+
+		secret, err := clientset.CoreV1().Secrets(options.KOTSNamespace).Get(context.TODO(), NFSMinioSecretName, metav1.GetOptions{})
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to get nfs minio secret")
+		}
+
+		service, err := clientset.CoreV1().Services(options.KOTSNamespace).Get(context.TODO(), NFSMinioServiceName, metav1.GetOptions{})
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to get nfs minio service")
+		}
+
+		if store.NFS == nil {
+			store.NFS = &types.StoreNFS{}
+		}
+		store.AWS = nil
+		store.Google = nil
+		store.Azure = nil
+		store.Other = nil
+		store.Internal = nil
+
+		store.Provider = "aws"
+		store.Bucket = "velero"
+		store.Path = ""
+
+		store.NFS.AccessKeyID = string(secret.Data["MINIO_ACCESS_KEY"])
+		store.NFS.SecretAccessKey = string(secret.Data["MINIO_SECRET_KEY"])
+		store.NFS.Endpoint = fmt.Sprintf("http://%s.%s", NFSMinioServiceName, options.KOTSNamespace)
+		store.NFS.ObjectStoreClusterIP = service.Spec.ClusterIP
+		store.NFS.Region = "us-east-1"
+	}
+
+	if err := ValidateStore(store); err != nil {
+		return nil, &InvalidStoreDataError{Message: errors.Cause(err).Error()}
+	}
+
+	updatedBackupStorageLocation, err := UpdateGlobalStore(store)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to update global store")
+	}
+
+	if err := ResetResticRepositories(); err != nil {
+		return nil, errors.Wrap(err, "failed to try to reset restic repositories")
+	}
+
+	// most plugins (all?) require that velero be restared after updating
+	if err := RestartVelero(); err != nil {
+		return nil, errors.Wrap(err, "failed to try to restart velero")
+	}
+
+	updatedStore, err := GetGlobalStore(updatedBackupStorageLocation)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to update store")
+	}
+
+	if err := Redact(updatedStore); err != nil {
+		return nil, errors.Wrap(err, "failed to redact")
+	}
+
+	return updatedStore, nil
+}
 
 // UpdateGlobalStore will update the in-cluster storage with exactly what's in the store param
 func UpdateGlobalStore(store *types.Store) (*velerov1.BackupStorageLocation, error) {
@@ -74,10 +353,11 @@ func UpdateGlobalStore(store *types.Store) (*velerov1.BackupStorageLocation, err
 	}
 
 	if store.AWS != nil {
-		logger.Debug("updating aws config in global snapshot storage",
-			zap.String("region", store.AWS.Region),
-			zap.String("accessKeyId", store.AWS.AccessKeyID),
-			zap.Bool("useInstanceRole", store.AWS.UseInstanceRole))
+		// TODO NOW
+		// logger.Debug("updating aws config in global snapshot storage",
+		// 	zap.String("region", store.AWS.Region),
+		// 	zap.String("accessKeyId", store.AWS.AccessKeyID),
+		// 	zap.Bool("useInstanceRole", store.AWS.UseInstanceRole))
 
 		kotsadmVeleroBackendStorageLocation.Spec.Config = map[string]string{
 			"region": store.AWS.Region,
@@ -279,6 +559,71 @@ func UpdateGlobalStore(store *types.Store) (*velerov1.BackupStorageLocation, err
 				return nil, errors.Wrap(err, "failed to update internal secret")
 			}
 		}
+	} else if store.NFS != nil {
+		kotsadmVeleroBackendStorageLocation.Spec.Config = map[string]string{
+			"region":           store.NFS.Region,
+			"s3Url":            store.NFS.Endpoint,
+			"publicUrl":        fmt.Sprintf("http://%s", store.NFS.ObjectStoreClusterIP),
+			"s3ForcePathStyle": "true",
+		}
+
+		nfsCfg := ini.Empty()
+		section, err := nfsCfg.NewSection("default")
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to create default section in nfs creds")
+		}
+		_, err = section.NewKey("aws_access_key_id", store.NFS.AccessKeyID)
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to create nfs access key id")
+		}
+
+		_, err = section.NewKey("aws_secret_access_key", store.NFS.SecretAccessKey)
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to create nfs secret access key")
+		}
+
+		var nfsCredentials bytes.Buffer
+		writer := bufio.NewWriter(&nfsCredentials)
+		_, err = nfsCfg.WriteTo(writer)
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to write ini")
+		}
+		if err := writer.Flush(); err != nil {
+			return nil, errors.Wrap(err, "failed to flush buffer")
+		}
+
+		// create or update the secret
+		if kuberneteserrors.IsNotFound(currentSecretErr) {
+			// create
+			toCreate := corev1.Secret{
+				TypeMeta: metav1.TypeMeta{
+					APIVersion: "v1",
+					Kind:       "Secret",
+				},
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "cloud-credentials",
+					Namespace: kotsadmVeleroBackendStorageLocation.Namespace,
+				},
+				Data: map[string][]byte{
+					"cloud": nfsCredentials.Bytes(),
+				},
+			}
+			_, err = clientset.CoreV1().Secrets(kotsadmVeleroBackendStorageLocation.Namespace).Create(context.TODO(), &toCreate, metav1.CreateOptions{})
+			if err != nil {
+				return nil, errors.Wrap(err, "failed to create nfs secret")
+			}
+		} else {
+			// update
+			if currentSecret.Data == nil {
+				currentSecret.Data = map[string][]byte{}
+			}
+
+			currentSecret.Data["cloud"] = nfsCredentials.Bytes()
+			_, err = clientset.CoreV1().Secrets(kotsadmVeleroBackendStorageLocation.Namespace).Update(context.TODO(), currentSecret, metav1.UpdateOptions{})
+			if err != nil {
+				return nil, errors.Wrap(err, "failed to update nfs secret")
+			}
+		}
 	} else if store.Google != nil {
 		if store.Google.UseInstanceRole {
 			kotsadmVeleroBackendStorageLocation.Spec.Config["serviceAccount"] = store.Google.ServiceAccount
@@ -419,11 +764,6 @@ func GetGlobalStore(kotsadmVeleroBackendStorageLocation *velerov1.BackupStorageL
 	}
 
 	prefix := kotsadmVeleroBackendStorageLocation.Spec.ObjectStorage.Prefix
-	// TODO: Remove this if nothing gets broken
-	// Copied from the typescript implemention, not sure why this would be set
-	// if strings.HasPrefix(prefix, "kotsadm-velero-backend") {
-	// 	prefix = prefix[len("kotsadm-velero-backend"):]
-	// }
 
 	store := types.Store{
 		Provider: kotsadmVeleroBackendStorageLocation.Spec.Provider,
@@ -435,7 +775,7 @@ func GetGlobalStore(kotsadmVeleroBackendStorageLocation *velerov1.BackupStorageL
 	case "aws":
 		endpoint, isS3Compatible := kotsadmVeleroBackendStorageLocation.Spec.Config["s3Url"]
 		if isS3Compatible {
-			s3Secret, err := kurl.GetS3Secret()
+			s3Secret, err := kotsutil.GetKurlS3Secret()
 			if err != nil {
 				return nil, errors.Wrap(err, "failed to get s3 secret")
 			}
@@ -446,9 +786,32 @@ func GetGlobalStore(kotsadmVeleroBackendStorageLocation *velerov1.BackupStorageL
 					ObjectStoreClusterIP: string(s3Secret.Data["object-store-cluster-ip"]),
 				}
 			} else {
-				store.Other = &types.StoreOther{
-					Region:   kotsadmVeleroBackendStorageLocation.Spec.Config["region"],
-					Endpoint: endpoint,
+				u, err := url.Parse(endpoint)
+				if err != nil {
+					return nil, errors.Wrap(err, "failed to parse s3 url")
+				}
+				fmt.Println("u.Hostname() ENDPOINT", u.Hostname())
+				serviceName := strings.Split(u.Hostname(), ".")[0]
+				if u.Scheme == "http" && serviceName == NFSMinioServiceName {
+					objectStoreClusterIP, ok := kotsadmVeleroBackendStorageLocation.Spec.Config["publicUrl"]
+					if !ok {
+						return nil, errors.New("public url for NFS store not found")
+					}
+					u, err := url.Parse(objectStoreClusterIP)
+					if err != nil {
+						return nil, errors.Wrap(err, "failed to parse public url for NFS store")
+					}
+					fmt.Println("u.Hostname() objectStoreClusterIP", u.Hostname())
+					store.NFS = &types.StoreNFS{
+						Region:               kotsadmVeleroBackendStorageLocation.Spec.Config["region"],
+						Endpoint:             endpoint,
+						ObjectStoreClusterIP: u.Hostname(),
+					}
+				} else {
+					store.Other = &types.StoreOther{
+						Region:   kotsadmVeleroBackendStorageLocation.Spec.Config["region"],
+						Endpoint: endpoint,
+					}
 				}
 			}
 		} else {
@@ -477,6 +840,9 @@ func GetGlobalStore(kotsadmVeleroBackendStorageLocation *velerov1.BackupStorageL
 					if store.Internal != nil {
 						store.Internal.AccessKeyID = section.Key("aws_access_key_id").Value()
 						store.Internal.SecretAccessKey = section.Key("aws_secret_access_key").Value()
+					} else if store.NFS != nil {
+						store.NFS.AccessKeyID = section.Key("aws_access_key_id").Value()
+						store.NFS.SecretAccessKey = section.Key("aws_secret_access_key").Value()
 					} else if store.Other != nil {
 						store.Other.AccessKeyID = section.Key("aws_access_key_id").Value()
 						store.Other.SecretAccessKey = section.Key("aws_secret_access_key").Value()
@@ -600,6 +966,13 @@ func ValidateStore(store *types.Store) error {
 	if store.Internal != nil {
 		if err := validateInternal(store.Internal, store.Bucket); err != nil {
 			return errors.Wrap(err, "failed to validate Internal configuration")
+		}
+		return nil
+	}
+
+	if store.NFS != nil {
+		if err := validateNFS(store.NFS, store.Bucket); err != nil {
+			return errors.Wrap(err, "failed to validate NFS configuration")
 		}
 		return nil
 	}
@@ -781,6 +1154,32 @@ func validateInternal(storeInternal *types.StoreInternal, bucket string) error {
 	return nil
 }
 
+func validateNFS(storeNFS *types.StoreNFS, bucket string) error {
+	s3Config := &aws.Config{
+		Region:           aws.String(storeNFS.Region),
+		Endpoint:         aws.String(storeNFS.Endpoint),
+		DisableSSL:       aws.Bool(true), // TODO: this needs to be configurable
+		S3ForcePathStyle: aws.Bool(true),
+	}
+
+	if storeNFS.AccessKeyID != "" && storeNFS.SecretAccessKey != "" {
+		s3Config.Credentials = credentials.NewStaticCredentials(storeNFS.AccessKeyID, storeNFS.SecretAccessKey, "")
+	}
+
+	newSession := session.New(s3Config)
+	s3Client := s3.New(newSession)
+
+	_, err := s3Client.HeadBucket(&s3.HeadBucketInput{
+		Bucket: aws.String(bucket),
+	})
+
+	if err != nil {
+		return errors.Wrap(err, "bucket does not exist")
+	}
+
+	return nil
+}
+
 func Redact(store *types.Store) error {
 	if store == nil {
 		return nil
@@ -813,6 +1212,12 @@ func Redact(store *types.Store) error {
 	if store.Internal != nil {
 		if store.Internal.SecretAccessKey != "" {
 			store.Internal.SecretAccessKey = "--- REDACTED ---"
+		}
+	}
+
+	if store.NFS != nil {
+		if store.NFS.SecretAccessKey != "" {
+			store.NFS.SecretAccessKey = "--- REDACTED ---"
 		}
 	}
 

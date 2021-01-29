@@ -33,12 +33,10 @@ type ListInstanceRestoresOptions struct {
 }
 
 func RestoreInstanceBackup(options RestoreInstanceBackupOptions) (*velerov1.Restore, error) {
-	bsl, err := findBackupStoreLocation()
+	veleroNamespace, err := DetectVeleroNamespace()
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to get velero namespace")
 	}
-
-	veleroNamespace := bsl.Namespace
 
 	// get the backup
 	cfg, err := config.GetConfig()
@@ -201,12 +199,10 @@ func RestoreInstanceBackup(options RestoreInstanceBackupOptions) (*velerov1.Rest
 }
 
 func ListInstanceRestores(options ListInstanceRestoresOptions) ([]velerov1.Restore, error) {
-	bsl, err := findBackupStoreLocation()
+	veleroNamespace, err := DetectVeleroNamespace()
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to get velero namespace")
 	}
-
-	veleroNamespace := bsl.Namespace
 
 	cfg, err := config.GetConfig()
 	if err != nil {
@@ -241,12 +237,10 @@ func ListInstanceRestores(options ListInstanceRestoresOptions) ([]velerov1.Resto
 }
 
 func waitForVeleroRestoreCompleted(restoreName string) (*velerov1.Restore, error) {
-	bsl, err := findBackupStoreLocation()
+	veleroNamespace, err := DetectVeleroNamespace()
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to get velero namespace")
 	}
-
-	veleroNamespace := bsl.Namespace
 
 	cfg, err := config.GetConfig()
 	if err != nil {

@@ -23,7 +23,7 @@ import (
 	"github.com/replicatedhq/kots/kotsadm/pkg/persistence"
 	"github.com/replicatedhq/kots/kotsadm/pkg/registry"
 	"github.com/replicatedhq/kots/kotsadm/pkg/render/helper"
-	"github.com/replicatedhq/kots/kotsadm/pkg/snapshot"
+	"github.com/replicatedhq/kots/pkg/snapshot"
 	"github.com/replicatedhq/kots/kotsadm/pkg/store"
 	"github.com/replicatedhq/kots/kotsadm/pkg/supportbundle/types"
 	"github.com/replicatedhq/kots/kotskinds/client/kotsclientset/scheme"

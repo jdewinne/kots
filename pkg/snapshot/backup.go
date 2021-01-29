@@ -141,12 +141,10 @@ func CreateInstanceBackup(options CreateInstanceBackupOptions) error {
 }
 
 func ListInstanceBackups(options ListInstanceBackupsOptions) ([]velerov1.Backup, error) {
-	bsl, err := findBackupStoreLocation()
+	veleroNamespace, err := DetectVeleroNamespace()
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to get velero namespace")
 	}
-
-	veleroNamespace := bsl.Namespace
 
 	cfg, err := config.GetConfig()
 	if err != nil {
@@ -181,12 +179,10 @@ func ListInstanceBackups(options ListInstanceBackupsOptions) ([]velerov1.Backup,
 }
 
 func waitForVeleroBackupCompleted(backupName string) (*velerov1.Backup, error) {
-	bsl, err := findBackupStoreLocation()
+	veleroNamespace, err := DetectVeleroNamespace()
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to get velero namespace")
 	}
-
-	veleroNamespace := bsl.Namespace
 
 	cfg, err := config.GetConfig()
 	if err != nil {
