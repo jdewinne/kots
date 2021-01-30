@@ -5,9 +5,9 @@ import (
 	"strings"
 
 	"github.com/replicatedhq/kots/kotsadm/pkg/logger"
-	kotssnapshot "github.com/replicatedhq/kots/pkg/snapshot"
 	"github.com/replicatedhq/kots/kotsadm/pkg/snapshot"
 	"github.com/replicatedhq/kots/kotsadm/pkg/store"
+	kotssnapshot "github.com/replicatedhq/kots/pkg/snapshot"
 )
 
 type PingResponse struct {

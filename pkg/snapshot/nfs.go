@@ -6,6 +6,11 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/awserr"
+	"github.com/aws/aws-sdk-go/aws/credentials"
+	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/google/uuid"
 	"github.com/pkg/errors"
 	kotsadmtypes "github.com/replicatedhq/kots/pkg/kotsadm/types"
@@ -25,6 +30,8 @@ import (
 const (
 	NFSMinioPVName, NFSMinioPVCName                                 = "kotsadm-nfs-minio", "kotsadm-nfs-minio"
 	NFSMinioSecretName, NFSMinioDeploymentName, NFSMinioServiceName = "kotsadm-nfs-minio-creds", "kotsadm-nfs-minio", "kotsadm-nfs-minio"
+	NFSMinioProvider, NFSMinioBucketName, NFSMinioRegion            = "aws", "velero", "us-east-1"
+	NFSMinioServicePort                                             = 9000
 )
 
 type NFSDeployOptions struct {
@@ -179,19 +186,9 @@ func ensureSecret(ctx context.Context, clientset kubernetes.Interface, namespace
 		return s, nil
 	}
 
-	existingSecret = updateSecret(existingSecret, secret)
+	// no patch needed
 
-	s, err := clientset.CoreV1().Secrets(namespace).Update(ctx, existingSecret, metav1.UpdateOptions{})
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to update secret")
-	}
-
-	return s, nil
-}
-
-func updateSecret(existingSecret, desiredSecret *corev1.Secret) *corev1.Secret {
-	existingSecret.Data = desiredSecret.Data
-	return existingSecret
+	return existingSecret, nil
 }
 
 func secretResource() *corev1.Secret {
@@ -440,7 +437,7 @@ func serviceResource() *corev1.Service {
 			Ports: []corev1.ServicePort{
 				{
 					Protocol:   corev1.ProtocolTCP,
-					Port:       9000,
+					Port:       NFSMinioServicePort,
 					TargetPort: intstr.FromInt(9000),
 				},
 			},
@@ -454,11 +451,11 @@ func updateService(existingService, desiredService *corev1.Service) *corev1.Serv
 	return existingService
 }
 
-func WaitForNFSMinio(clientset *kubernetes.Clientset, namespace string, timeout time.Duration) (string, error) {
+func WaitForNFSMinio(ctx context.Context, clientset *kubernetes.Clientset, namespace string, timeout time.Duration) (string, error) {
 	start := time.Now()
 
 	for {
-		pods, err := clientset.CoreV1().Pods(namespace).List(context.TODO(), metav1.ListOptions{LabelSelector: "app=kotsadm-nfs-minio"})
+		pods, err := clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{LabelSelector: "app=kotsadm-nfs-minio"})
 		if err != nil {
 			return "", errors.Wrap(err, "failed to list pods")
 		}
@@ -477,4 +474,54 @@ func WaitForNFSMinio(clientset *kubernetes.Clientset, namespace string, timeout 
 			return "", errors.New("timeout waiting for kotsadm-nfs-minio pod")
 		}
 	}
+}
+
+func CreateNFSBucket(ctx context.Context, clientset *kubernetes.Clientset, namespace string) error {
+	secret, err := clientset.CoreV1().Secrets(namespace).Get(ctx, NFSMinioSecretName, metav1.GetOptions{})
+	if err != nil {
+		return errors.Wrap(err, "failed to get nfs minio secret")
+	}
+
+	service, err := clientset.CoreV1().Services(namespace).Get(ctx, NFSMinioServiceName, metav1.GetOptions{})
+	if err != nil {
+		return errors.Wrap(err, "failed to get nfs minio service")
+	}
+
+	endpoint := fmt.Sprintf("http://%s:%d", service.Spec.ClusterIP, service.Spec.Ports[0].Port)
+	accessKeyID := string(secret.Data["MINIO_ACCESS_KEY"])
+	secretAccessKey := string(secret.Data["MINIO_SECRET_KEY"])
+
+	s3Config := &aws.Config{
+		Region:           aws.String(NFSMinioRegion),
+		Endpoint:         aws.String(endpoint),
+		DisableSSL:       aws.Bool(true), // TODO: this needs to be configurable
+		S3ForcePathStyle: aws.Bool(true),
+	}
+
+	if accessKeyID != "" && secretAccessKey != "" {
+		s3Config.Credentials = credentials.NewStaticCredentials(accessKeyID, secretAccessKey, "")
+	}
+
+	newSession := session.New(s3Config)
+	s3Client := s3.New(newSession)
+
+	_, err = s3Client.HeadBucket(&s3.HeadBucketInput{
+		Bucket: aws.String(NFSMinioBucketName),
+	})
+
+	if err != nil {
+		if aerr, ok := err.(awserr.Error); ok {
+			if aerr.Code() == "NotFound" {
+				_, err = s3Client.CreateBucket(&s3.CreateBucketInput{
+					Bucket: aws.String(NFSMinioBucketName),
+				})
+				if err != nil {
+					return errors.Wrap(err, "failed to create bucket")
+				}
+			}
+		}
+		return errors.Wrap(err, "failed to check if bucket exists")
+	}
+
+	return nil
 }

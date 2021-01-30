@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"time"
+
 	"github.com/pkg/errors"
 	"github.com/replicatedhq/kots/pkg/k8sutil"
 	"github.com/replicatedhq/kots/pkg/kotsadm"
@@ -67,12 +69,20 @@ func BackupConfigureNFSCmd() *cobra.Command {
 			log.FinishSpinner()
 			log.ActionWithSpinner("Waiting for NFS Minio to by ready")
 
-			// TODO NOW
-			// _, err = snapshot.WaitForNFSMinio(clientset, namespace, time.Minute*5)
-			// if err != nil {
-			// 	log.FinishSpinnerWithError()
-			// 	return errors.Wrap(err, "failed to wait for nfs minio")
-			// }
+			_, err = snapshot.WaitForNFSMinio(cmd.Context(), clientset, namespace, time.Minute*5)
+			if err != nil {
+				log.FinishSpinnerWithError()
+				return errors.Wrap(err, "failed to wait for nfs minio")
+			}
+
+			log.FinishSpinner()
+			log.ActionWithSpinner("Creating Default Bucket")
+
+			err = snapshot.CreateNFSBucket(cmd.Context(), clientset, namespace)
+			if err != nil {
+				log.FinishSpinnerWithError()
+				return errors.Wrap(err, "failed to create default bucket")
+			}
 
 			log.FinishSpinner()
 			log.ActionWithSpinner("Configuring Velero")
@@ -98,21 +108,14 @@ func BackupConfigureNFSCmd() *cobra.Command {
 				return errors.Wrap(err, "failed to get global store")
 			}
 
-			// configureStoreOptions := snapshot.ConfigureStoreOptions{
-			// 	Provider: "aws",
-			// 	Bucket:   "",
-			// 	Path:     "",
-
-			// 	NFS: &types.StoreNFS{
-			// 		Region: currentStore.NF,
-			// 	},
-
-			//  KOTSNamespace: namespace,
-			// }
-			// _, err := snapshot.ConfigureStore(configureStoreOptions)
-			// if err != nil {
-			// 	return errors.Wrap(err, "failed to configure store")
-			// }
+			configureStoreOptions := snapshot.ConfigureStoreOptions{
+				NFS:           true,
+				KOTSNamespace: namespace,
+			}
+			_, err = snapshot.ConfigureStore(configureStoreOptions)
+			if err != nil {
+				return errors.Wrap(err, "failed to configure store")
+			}
 
 			log.FinishSpinner()
 

@@ -275,15 +275,15 @@ func ConfigureStore(options ConfigureStoreOptions) (*types.Store, error) {
 		store.Other = nil
 		store.Internal = nil
 
-		store.Provider = "aws"
-		store.Bucket = "velero"
+		store.Provider = NFSMinioProvider
+		store.Bucket = NFSMinioBucketName
 		store.Path = ""
 
 		store.NFS.AccessKeyID = string(secret.Data["MINIO_ACCESS_KEY"])
 		store.NFS.SecretAccessKey = string(secret.Data["MINIO_SECRET_KEY"])
-		store.NFS.Endpoint = fmt.Sprintf("http://%s.%s", NFSMinioServiceName, options.KOTSNamespace)
+		store.NFS.Endpoint = fmt.Sprintf("http://%s.%s:%d", NFSMinioServiceName, options.KOTSNamespace, service.Spec.Ports[0].Port)
 		store.NFS.ObjectStoreClusterIP = service.Spec.ClusterIP
-		store.NFS.Region = "us-east-1"
+		store.NFS.Region = NFSMinioRegion
 	}
 
 	if err := ValidateStore(store); err != nil {
@@ -353,12 +353,6 @@ func UpdateGlobalStore(store *types.Store) (*velerov1.BackupStorageLocation, err
 	}
 
 	if store.AWS != nil {
-		// TODO NOW
-		// logger.Debug("updating aws config in global snapshot storage",
-		// 	zap.String("region", store.AWS.Region),
-		// 	zap.String("accessKeyId", store.AWS.AccessKeyID),
-		// 	zap.Bool("useInstanceRole", store.AWS.UseInstanceRole))
-
 		kotsadmVeleroBackendStorageLocation.Spec.Config = map[string]string{
 			"region": store.AWS.Region,
 		}
@@ -563,7 +557,7 @@ func UpdateGlobalStore(store *types.Store) (*velerov1.BackupStorageLocation, err
 		kotsadmVeleroBackendStorageLocation.Spec.Config = map[string]string{
 			"region":           store.NFS.Region,
 			"s3Url":            store.NFS.Endpoint,
-			"publicUrl":        fmt.Sprintf("http://%s", store.NFS.ObjectStoreClusterIP),
+			"publicUrl":        fmt.Sprintf("http://%s:%d", store.NFS.ObjectStoreClusterIP, NFSMinioServicePort),
 			"s3ForcePathStyle": "true",
 		}
 
@@ -790,18 +784,16 @@ func GetGlobalStore(kotsadmVeleroBackendStorageLocation *velerov1.BackupStorageL
 				if err != nil {
 					return nil, errors.Wrap(err, "failed to parse s3 url")
 				}
-				fmt.Println("u.Hostname() ENDPOINT", u.Hostname())
 				serviceName := strings.Split(u.Hostname(), ".")[0]
 				if u.Scheme == "http" && serviceName == NFSMinioServiceName {
-					objectStoreClusterIP, ok := kotsadmVeleroBackendStorageLocation.Spec.Config["publicUrl"]
+					publicURL, ok := kotsadmVeleroBackendStorageLocation.Spec.Config["publicUrl"]
 					if !ok {
 						return nil, errors.New("public url for NFS store not found")
 					}
-					u, err := url.Parse(objectStoreClusterIP)
+					u, err := url.Parse(publicURL)
 					if err != nil {
 						return nil, errors.Wrap(err, "failed to parse public url for NFS store")
 					}
-					fmt.Println("u.Hostname() objectStoreClusterIP", u.Hostname())
 					store.NFS = &types.StoreNFS{
 						Region:               kotsadmVeleroBackendStorageLocation.Spec.Config["region"],
 						Endpoint:             endpoint,
@@ -1155,9 +1147,12 @@ func validateInternal(storeInternal *types.StoreInternal, bucket string) error {
 }
 
 func validateNFS(storeNFS *types.StoreNFS, bucket string) error {
+	// we use ip instead of name since it has to be reachable from the CLI too
+	endpoint := fmt.Sprintf("http://%s:%d", storeNFS.ObjectStoreClusterIP, NFSMinioServicePort)
+
 	s3Config := &aws.Config{
 		Region:           aws.String(storeNFS.Region),
-		Endpoint:         aws.String(storeNFS.Endpoint),
+		Endpoint:         aws.String(endpoint),
 		DisableSSL:       aws.Bool(true), // TODO: this needs to be configurable
 		S3ForcePathStyle: aws.Bool(true),
 	}
