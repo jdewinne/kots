@@ -33,6 +33,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
+// InstallCmd installs the kots app
 func InstallCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:           "install [upstream uri]",
@@ -224,31 +225,51 @@ func InstallCmd() *cobra.Command {
 			}
 
 			log.ActionWithoutSpinner("Deploying Admin Console")
+			// Initialize kots metrics before Deploy to monitor its success/failure
+			// Enable sampling only in non-airgap mode
+			var cause string
+			im, err := InitMetrics(&deployOptions, isAirgap)
+			if err != nil {
+				return errors.Wrap(err, "failed to init install metrics")
+			}
+			CollectStartInstallMetrics(im)
 			if err := kotsadm.Deploy(deployOptions); err != nil {
 				if _, ok := errors.Cause(err).(*types.ErrorTimeout); ok {
+					cause = "kotsadm failed"
+					CollectFailInstallMetrics(im, cause)
 					return errors.Errorf("Failed to deploy: %s. Use the --wait-duration flag to increase timeout.", err)
 				}
-				return errors.Wrap(err, "failed to deploy")
+				// Update Metrics with failed status
+				cause = "failed to deploy"
+				CollectFailInstallMetrics(im, cause)
+				return errors.Wrap(err, cause)
 			}
 
 			if deployOptions.ExcludeAdminConsole && sharedPassword != "" {
 				if err := setKotsadmPassword(sharedPassword, namespace); err != nil {
-					return errors.Wrap(err, "failed to set new password")
+					cause = "failed to set new password"
+					CollectFailInstallMetrics(im, cause)
+					return errors.Wrap(err, cause)
 				}
 			}
 
 			// port forward
 			clientset, err := k8sutil.GetClientset(kubernetesConfigFlags)
 			if err != nil {
-				return errors.Wrap(err, "failed to get clientset")
+				cause = "failed to get clientset"
+				CollectFailInstallMetrics(im, cause)
+				return errors.Wrap(err, cause)
 			}
 
 			podName, err := k8sutil.WaitForKotsadm(clientset, namespace, timeout)
 			if err != nil {
 				if _, ok := errors.Cause(err).(*types.ErrorTimeout); ok {
+					CollectFailInstallMetrics(im, "kotsadm failed to start within timeout")
 					return errors.Errorf("kotsadm failed to start: %s. Use the --wait-duration flag to increase timeout.", err)
 				}
-				return errors.Wrap(err, "failed to wait for web")
+				cause = "failed to wait for web"
+				CollectFailInstallMetrics(im, cause)
+				return errors.Wrap(err, cause)
 			}
 
 			stopCh := make(chan struct{})
@@ -256,7 +277,9 @@ func InstallCmd() *cobra.Command {
 
 			adminConsolePort, errChan, err := k8sutil.PortForward(kubernetesConfigFlags, 8800, 3000, namespace, podName, true, stopCh, log)
 			if err != nil {
-				return errors.Wrap(err, "failed to forward port")
+				cause = "failed to forward port"
+				CollectFailInstallMetrics(im, cause)
+				return errors.Wrap(err, cause)
 			}
 
 			if deployOptions.AirgapRootDir != "" {
@@ -279,12 +302,16 @@ func InstallCmd() *cobra.Command {
 					}
 
 					if err != nil {
-						return errors.Wrap(err, "failed to upload app.tar.gz")
+						cause = "failed to upload app.tar.gz"
+						CollectFailInstallMetrics(im, cause)
+						return errors.Wrap(err, cause)
 					}
 				}
 
 				if tryAgain {
-					return errors.Wrap(err, "giving up uploading app.tar.gz")
+					cause = "giving up uploading app.tar.gz"
+					CollectFailInstallMetrics(im, cause)
+					return errors.Wrap(err, cause)
 				}
 
 				// remove here in case CLI is killed and defer doesn't run
@@ -302,6 +329,8 @@ func InstallCmd() *cobra.Command {
 				}
 			}()
 
+			// Possibly Successful Deployment - Report here
+			CollectFinishInstallMetrics(im)
 			if v.GetBool("port-forward") && !deployOptions.ExcludeAdminConsole {
 				log.ActionWithoutSpinner("")
 
