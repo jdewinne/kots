@@ -3,6 +3,7 @@ import Select from "react-select";
 import { withRouter } from "react-router-dom"
 import MonacoEditor from "react-monaco-editor";
 import find from "lodash/find";
+import Modal from "react-modal";
 
 import ConfigureSnapshots from "./ConfigureSnapshots";
 
@@ -30,6 +31,10 @@ const DESTINATIONS = [
   {
     value: "internal",
     label: "Internal Storage (Default)",
+  },
+  {
+    value: "nfs",
+    label: "Network File System - NFS",
   }
 ];
 
@@ -88,6 +93,9 @@ class SnapshotStorageDestination extends Component {
     s3CompatibleKeySecret: "",
     s3CompatibleEndpoint: "",
     s3CompatibleRegion: "",
+
+    nfsPath: "/mnt/nfs_share", // TODO NOW
+    nfsServer: "10.128.0.32", // TODO NOW
   };
 
   componentDidMount() {
@@ -151,6 +159,7 @@ class SnapshotStorageDestination extends Component {
         snapshotSettings?.store?.other?.secretAccessKey !== s3CompatibleKeySecret || snapshotSettings?.store?.other?.endpoint !== s3CompatibleEndpoint
       )
     }
+    // TODO NOW check nfs and remove this return statement
   }
 
   getCurrentProviderStores = (provider) => {
@@ -266,6 +275,14 @@ class SnapshotStorageDestination extends Component {
       });
     }
 
+    if (store?.nfs) {
+      return this.setState({
+        determiningDestination: false,
+        selectedDestination: find(DESTINATIONS, ["value", "nfs"]),
+        // TODO NOW set nfsPath and nfsServer
+      });
+    }
+
     // if nothing exists yet, we've determined default state is good
     this.setState({
       determiningDestination: false,
@@ -283,8 +300,8 @@ class SnapshotStorageDestination extends Component {
     this.setState(nextState);
   }
 
-  handleDestinationChange = (retentionUnit) => {
-    this.setState({ selectedDestination: retentionUnit });
+  handleDestinationChange = (destination) => {
+    this.setState({ selectedDestination: destination });
   }
 
   handleAzureCloudNameChange = (azureCloudName) => {
@@ -313,7 +330,15 @@ class SnapshotStorageDestination extends Component {
       case "internal":
         await this.snapshotProviderInternal();
         break;
+      case "nfs":
+        await this.snapshotProviderNFS(false);
+        break;
     }
+  }
+
+  forceSnapshotProviderNFS = async () => {
+    this.props.hideResetNFSWarningModal();
+    await this.snapshotProviderNFS(true);
   }
 
   getProviderPayload = (provider, bucket, path) => {
@@ -346,6 +371,17 @@ class SnapshotStorageDestination extends Component {
 
   snapshotProviderInternal = async () => {
     const payload = { internal: true };
+    this.props.updateSettings(payload);
+  }
+
+  snapshotProviderNFS = async (forceReset = false) => {
+    const payload = {
+      nfs: {
+        path: this.state.nfsPath,
+        server: this.state.nfsServer,
+        forceReset: forceReset,
+      }
+    }
     this.props.updateSettings(payload);
   }
 
@@ -596,6 +632,22 @@ class SnapshotStorageDestination extends Component {
           null
         )
 
+      case "nfs":
+        return (
+          <div>
+            <div className="flex u-marginBottom--30">
+              <div className="flex1 u-paddingRight--5">
+                <p className="u-fontSize--normal u-color--tuna u-fontWeight--bold u-lineHeight--normal u-marginBottom--10">Path</p>
+                <input type="text" className="Input" placeholder="/path/to/nfs-directory" value={this.state.nfsPath} onChange={(e) => { this.handleFormChange("nfsPath", e) }} />
+              </div>
+              <div className="flex1 u-paddingLeft--5">
+                <p className="u-fontSize--normal u-color--tuna u-fontWeight--bold u-lineHeight--normal u-marginBottom--10">Server</p>
+                <input type="text" className="Input" placeholder="NFS server IP address" value={this.state.nfsServer} onChange={(e) => { this.handleFormChange("nfsServer", e) }} />
+              </div>
+            </div>
+          </div>
+        )
+
       default:
         return (
           <div>No snapshot destination is selected</div>
@@ -631,6 +683,10 @@ class SnapshotStorageDestination extends Component {
                 label: "Internal Storage (Default)",
               });
             }
+            availableDestinations.push({
+              value: "nfs",
+              label: "Network File System - NFS",
+            });
             break;
           case "velero-plugin-for-azure":
             availableDestinations.push({
@@ -718,6 +774,7 @@ class SnapshotStorageDestination extends Component {
           </div>
           <SnapshotSchedule isVeleroRunning={snapshotSettings?.isVeleroRunning} isKurlEnabled={this.props.isKurlEnabled} />
         </div>
+
         {this.props.configureSnapshotsModal &&
           <ConfigureSnapshots
             snapshotSettings={this.props.snapshotSettings}
@@ -727,6 +784,25 @@ class SnapshotStorageDestination extends Component {
             configureSnapshotsModal={this.props.configureSnapshotsModal}
             toggleConfigureModal={this.props.toggleConfigureModal}
           />}
+
+        {this.props.showResetNFSWarningModal &&
+          <Modal
+            isOpen={this.props.showResetNFSWarningModal}
+            onRequestClose={this.props.hideResetNFSWarningModal}
+            shouldReturnFocusAfterClose={false}
+            contentLabel="Reset NFS config"
+            ariaHideApp={false}
+            className="Modal MediumSize"
+          >
+            <div className="Modal-body">
+              <p className="u-fontSize--large u-color--chestnut u-marginBottom--20">{this.props.resetNFSWarningMessage}</p>
+              <div className="u-marginTop--10 flex justifyContent--flexEnd">
+                <button type="button" className="btn secondary" onClick={this.props.hideResetNFSWarningModal}>No</button>
+                <button type="button" className="btn blue primary u-marginLeft--10" onClick={this.forceSnapshotProviderNFS}>Yes</button>
+              </div>
+            </div>
+          </Modal>
+        }
       </div>
     );
   }

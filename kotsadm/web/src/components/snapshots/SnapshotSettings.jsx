@@ -21,7 +21,9 @@ class SnapshotSettings extends Component {
     updateConfirm: false,
     updatingSettings: false,
     updateErrorMsg: "",
-    configureSnapshotsModal: false
+    configureSnapshotsModal: false,
+    showResetNFSWarningModal: false,
+    resetNFSWarningMessage: "",
   };
 
   fetchSnapshotSettings = (isCheckForVelero) => {
@@ -97,6 +99,15 @@ class SnapshotSettings extends Component {
       body: JSON.stringify(payload)
     })
       .then(async (res) => {
+        if (res.status === 409) {
+          const response = await res.json();
+          this.setState({
+            updatingSettings: false,
+            showResetNFSWarningModal: true,
+            resetNFSWarningMessage: response.error,
+          })
+          return;
+        }
 
         const settingsResponse = await res.json();
         if (!res.ok) {
@@ -148,6 +159,10 @@ class SnapshotSettings extends Component {
     }
   };
 
+  hideResetNFSWarningModal = () => {
+    this.setState({ showResetNFSWarningModal: false });
+  };
+
 
   render() {
     const { isLoadingSnapshotSettings, snapshotSettings, hideCheckVeleroButton, updateConfirm, updatingSettings, updateErrorMsg, isEmptyView } = this.state;
@@ -189,6 +204,9 @@ class SnapshotSettings extends Component {
             isLicenseUpload={isLicenseUpload}
             configureSnapshotsModal={this.state.configureSnapshotsModal}
             toggleConfigureModal={this.toggleConfigureModal}
+            showResetNFSWarningModal={this.state.showResetNFSWarningModal}
+            resetNFSWarningMessage={this.state.resetNFSWarningMessage}
+            hideResetNFSWarningModal={this.hideResetNFSWarningModal}
             isKurlEnabled={this.props.isKurlEnabled} />
         </div>
       </div>

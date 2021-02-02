@@ -16,10 +16,14 @@ import (
 	"github.com/replicatedhq/kots/kotsadm/pkg/snapshot"
 	snapshottypes "github.com/replicatedhq/kots/kotsadm/pkg/snapshot/types"
 	"github.com/replicatedhq/kots/kotsadm/pkg/store"
+	"github.com/replicatedhq/kots/pkg/k8sutil"
+	"github.com/replicatedhq/kots/pkg/kotsadm"
 	kotssnapshot "github.com/replicatedhq/kots/pkg/snapshot"
 	kotssnapshottypes "github.com/replicatedhq/kots/pkg/snapshot/types"
 	"github.com/robfig/cron"
 	"k8s.io/apimachinery/pkg/util/rand"
+	"k8s.io/client-go/kubernetes"
+	"sigs.k8s.io/controller-runtime/pkg/client/config"
 )
 
 type GlobalSnapshotSettingsResponse struct {
@@ -45,7 +49,13 @@ type UpdateGlobalSnapshotSettingsRequest struct {
 	Azure    *kotssnapshottypes.StoreAzure  `json:"azure"`
 	Other    *kotssnapshottypes.StoreOther  `json:"other"`
 	Internal bool                           `json:"internal"`
-	NFS      bool                           `json:"nfs"`
+	NFS      *NFSOptions                    `json:"nfs"`
+}
+
+type NFSOptions struct {
+	Path       string `json:"path"`
+	Server     string `json:"server"`
+	ForceReset bool   `json:"forceReset"`
 }
 
 type SnapshotConfig struct {
@@ -67,7 +77,7 @@ func (h *Handler) UpdateGlobalSnapshotSettings(w http.ResponseWriter, r *http.Re
 	if err := json.NewDecoder(r.Body).Decode(&updateGlobalSnapshotSettingsRequest); err != nil {
 		logger.Error(err)
 		globalSnapshotSettingsResponse.Error = "failed to decode request body"
-		JSON(w, 400, globalSnapshotSettingsResponse)
+		JSON(w, http.StatusBadRequest, globalSnapshotSettingsResponse)
 		return
 	}
 
@@ -75,11 +85,11 @@ func (h *Handler) UpdateGlobalSnapshotSettings(w http.ResponseWriter, r *http.Re
 	if err != nil {
 		logger.Error(err)
 		globalSnapshotSettingsResponse.Error = "failed to detect velero"
-		JSON(w, 500, globalSnapshotSettingsResponse)
+		JSON(w, http.StatusInternalServerError, globalSnapshotSettingsResponse)
 		return
 	}
 	if veleroStatus == nil {
-		JSON(w, 200, globalSnapshotSettingsResponse)
+		JSON(w, http.StatusOK, globalSnapshotSettingsResponse)
 		return
 	}
 
@@ -90,7 +100,75 @@ func (h *Handler) UpdateGlobalSnapshotSettings(w http.ResponseWriter, r *http.Re
 	globalSnapshotSettingsResponse.IsResticRunning = veleroStatus.ResticStatus == "Ready"
 	globalSnapshotSettingsResponse.IsKurl = kurl.IsKurl()
 
-	// TODO NOW: make sure to deploy nfs minio first
+	if updateGlobalSnapshotSettingsRequest.NFS != nil {
+		// make sure NFS Minio is configured and deployed first
+		namespace := os.Getenv("POD_NAMESPACE")
+
+		cfg, err := config.GetConfig()
+		if err != nil {
+			err = errors.Wrap(err, "failed to get cluster config")
+			logger.Error(err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		clientset, err := kubernetes.NewForConfig(cfg)
+		if err != nil {
+			err = errors.Wrap(err, "failed to create kubernetes clientset")
+			logger.Error(err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		registryOptions, err := kotsadm.GetKotsadmOptionsFromCluster(namespace, clientset)
+		if err != nil {
+			err = errors.Wrap(err, "failed to get kotsadm options from cluster")
+			logger.Error(err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		deployOptions := kotssnapshot.NFSDeployOptions{
+			Namespace:   namespace,
+			IsOpenShift: k8sutil.IsOpenShift(clientset),
+			ForceReset:  updateGlobalSnapshotSettingsRequest.NFS.ForceReset,
+			NFSOptions: kotssnapshot.NFSOptions{
+				Path:   updateGlobalSnapshotSettingsRequest.NFS.Path,
+				Server: updateGlobalSnapshotSettingsRequest.NFS.Server,
+				// TODO NOW storage
+			},
+		}
+		if err := kotssnapshot.DeployNFSMinio(r.Context(), clientset, deployOptions, registryOptions); err != nil {
+			if _, ok := err.(*kotssnapshot.ResetNFSError); ok {
+				errMsg := kotssnapshot.GetNFSResetWarningMsg(updateGlobalSnapshotSettingsRequest.NFS.Path)
+				err = errors.New(errMsg)
+				JSON(w, http.StatusConflict, NewErrorResponse(err))
+				return
+			}
+			err = errors.Wrap(err, "failed to deploy nfs minio")
+			logger.Error(err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		err = kotssnapshot.WaitForNFSMinioReady(r.Context(), clientset, namespace, time.Minute*5)
+		if err != nil {
+			err = errors.Wrap(err, "failed to wait for nfs minio")
+			logger.Error(err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		err = kotssnapshot.CreateNFSBucket(r.Context(), clientset, namespace)
+		if err != nil {
+			err = errors.Wrap(err, "failed to create default bucket")
+			logger.Error(err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+	}
+
+	// update/configure store
 	options := kotssnapshot.ConfigureStoreOptions{
 		Provider: updateGlobalSnapshotSettingsRequest.Provider,
 		Bucket:   updateGlobalSnapshotSettingsRequest.Bucket,
@@ -101,7 +179,7 @@ func (h *Handler) UpdateGlobalSnapshotSettings(w http.ResponseWriter, r *http.Re
 		Azure:    updateGlobalSnapshotSettingsRequest.Azure,
 		Other:    updateGlobalSnapshotSettingsRequest.Other,
 		Internal: updateGlobalSnapshotSettingsRequest.Internal,
-		NFS:      updateGlobalSnapshotSettingsRequest.NFS,
+		NFS:      updateGlobalSnapshotSettingsRequest.NFS != nil,
 
 		KOTSNamespace: os.Getenv("POD_NAMESPACE"),
 	}

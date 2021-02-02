@@ -62,7 +62,8 @@ func (e ResetNFSError) Error() string {
 }
 
 func DeployNFSMinio(ctx context.Context, clientset kubernetes.Interface, deployOptions NFSDeployOptions, registryOptions kotsadmtypes.KotsadmOptions) error {
-	shouldReset, err := shouldResetNFSMount(ctx, clientset, deployOptions, registryOptions)
+	// configure NFS mount
+	shouldReset, hasMinioConfig, err := shouldResetNFSMount(ctx, clientset, deployOptions, registryOptions)
 	if err != nil {
 		return errors.Wrap(err, "failed to check if should reset nfs mount")
 	}
@@ -74,6 +75,19 @@ func DeployNFSMinio(ctx context.Context, clientset kubernetes.Interface, deployO
 		if err != nil {
 			return errors.Wrap(err, "failed to reset nfs mount")
 		}
+	}
+	if !hasMinioConfig {
+		err := scaleDownNFSMinio(ctx, clientset, deployOptions.Namespace)
+		if err != nil {
+			return errors.Wrap(err, "failed to scale down nfs minio")
+		}
+		err = waitForNFSMinioScaleDown(ctx, clientset, deployOptions.Namespace, time.Minute*2)
+		if err != nil {
+			return errors.Wrap(err, "failed to wait for nfs minio deployment to scale down")
+		}
+	}
+	if err := createMinioKeysSHAFile(ctx, clientset, deployOptions, registryOptions); err != nil {
+		return errors.Wrap(err, "failed to create minio keys sha file")
 	}
 
 	// deploy resources
@@ -411,6 +425,8 @@ func updateDeployment(existingDeployment, desiredDeployment *appsv1.Deployment) 
 		return desiredDeployment
 	}
 
+	existingDeployment.Spec.Replicas = desiredDeployment.Spec.Replicas
+
 	if existingDeployment.Spec.Template.Annotations == nil {
 		existingDeployment.Spec.Template.ObjectMeta.Annotations = map[string]string{}
 	}
@@ -482,89 +498,83 @@ func updateService(existingService, desiredService *corev1.Service) *corev1.Serv
 	return existingService
 }
 
-func WaitForNFSMinio(ctx context.Context, clientset *kubernetes.Clientset, namespace string, timeout time.Duration) (string, error) {
+func WaitForNFSMinioReady(ctx context.Context, clientset kubernetes.Interface, namespace string, timeout time.Duration) error {
 	start := time.Now()
 
 	for {
-		pods, err := clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{LabelSelector: "app=kotsadm-nfs-minio"})
+		d, err := clientset.AppsV1().Deployments(namespace).Get(context.TODO(), NFSMinioDeploymentName, metav1.GetOptions{})
 		if err != nil {
-			return "", errors.Wrap(err, "failed to list pods")
+			if !kuberneteserrors.IsNotFound(err) {
+				return errors.Wrap(err, "failed to get existing deployment")
+			}
+			return nil
 		}
 
-		for _, pod := range pods.Items {
-			if pod.Status.Phase == corev1.PodRunning {
-				if pod.Status.ContainerStatuses[0].Ready == true {
-					return pod.Name, nil
-				}
-			}
+		if d.Status.AvailableReplicas == 1 {
+			return nil
 		}
 
 		time.Sleep(time.Second)
 
 		if time.Now().Sub(start) > timeout {
-			return "", errors.New("timeout waiting for kotsadm-nfs-minio pod")
+			return errors.New("timeout waiting for deployment to scale down")
 		}
 	}
 }
 
-func CreateNFSBucket(ctx context.Context, clientset *kubernetes.Clientset, namespace string) error {
-	secret, err := clientset.CoreV1().Secrets(namespace).Get(ctx, NFSMinioSecretName, metav1.GetOptions{})
+func scaleDownNFSMinio(ctx context.Context, clientset kubernetes.Interface, namespace string) error {
+	d, err := clientset.AppsV1().Deployments(namespace).Get(ctx, NFSMinioDeploymentName, metav1.GetOptions{})
 	if err != nil {
-		return errors.Wrap(err, "failed to get nfs minio secret")
-	}
-
-	service, err := clientset.CoreV1().Services(namespace).Get(ctx, NFSMinioServiceName, metav1.GetOptions{})
-	if err != nil {
-		return errors.Wrap(err, "failed to get nfs minio service")
-	}
-
-	endpoint := fmt.Sprintf("http://%s:%d", service.Spec.ClusterIP, service.Spec.Ports[0].Port)
-	accessKeyID := string(secret.Data["MINIO_ACCESS_KEY"])
-	secretAccessKey := string(secret.Data["MINIO_SECRET_KEY"])
-
-	s3Config := &aws.Config{
-		Region:           aws.String(NFSMinioRegion),
-		Endpoint:         aws.String(endpoint),
-		DisableSSL:       aws.Bool(true), // TODO: this needs to be configurable
-		S3ForcePathStyle: aws.Bool(true),
-	}
-
-	if accessKeyID != "" && secretAccessKey != "" {
-		s3Config.Credentials = credentials.NewStaticCredentials(accessKeyID, secretAccessKey, "")
-	}
-
-	newSession := session.New(s3Config)
-	s3Client := s3.New(newSession)
-
-	_, err = s3Client.HeadBucket(&s3.HeadBucketInput{
-		Bucket: aws.String(NFSMinioBucketName),
-	})
-
-	if err != nil {
-		if aerr, ok := err.(awserr.Error); ok {
-			if aerr.Code() == "NotFound" {
-				_, err = s3Client.CreateBucket(&s3.CreateBucketInput{
-					Bucket: aws.String(NFSMinioBucketName),
-				})
-				if err != nil {
-					return errors.Wrap(err, "failed to create bucket")
-				}
-			}
+		if !kuberneteserrors.IsNotFound(err) {
+			return errors.Wrap(err, "failed to get existing deployment")
 		}
-		return errors.Wrap(err, "failed to check if bucket exists")
+		return nil
+	}
+
+	d.Spec.Replicas = pointer.Int32Ptr(0)
+
+	_, err = clientset.AppsV1().Deployments(namespace).Update(ctx, d, metav1.UpdateOptions{})
+	if err != nil {
+		return errors.Wrap(err, "failed to update deployment")
 	}
 
 	return nil
 }
 
-func shouldResetNFSMount(ctx context.Context, clientset kubernetes.Interface, deployOptions NFSDeployOptions, registryOptions kotsadmtypes.KotsadmOptions) (bool, error) {
+func waitForNFSMinioScaleDown(ctx context.Context, clientset kubernetes.Interface, namespace string, timeout time.Duration) error {
+	start := time.Now()
+
+	for {
+		d, err := clientset.AppsV1().Deployments(namespace).Get(context.TODO(), NFSMinioDeploymentName, metav1.GetOptions{})
+		if err != nil {
+			if !kuberneteserrors.IsNotFound(err) {
+				return errors.Wrap(err, "failed to get existing deployment")
+			}
+			return nil
+		}
+
+		if d.Status.AvailableReplicas == 0 {
+			return nil
+		}
+
+		time.Sleep(time.Second)
+
+		if time.Now().Sub(start) > timeout {
+			return errors.New("timeout waiting for deployment to scale down")
+		}
+	}
+}
+
+func shouldResetNFSMount(ctx context.Context, clientset kubernetes.Interface, deployOptions NFSDeployOptions, registryOptions kotsadmtypes.KotsadmOptions) (shouldReset bool, hasMinioConfig bool, finalErr error) {
 	checkPod, err := createNFSMinioCheckPod(ctx, clientset, deployOptions, registryOptions)
 	if err != nil {
-		return false, errors.Wrap(err, "failed to create nfs minio check pod")
+		finalErr = errors.Wrap(err, "failed to create nfs minio check pod")
+		return
 	}
 
 	if err := waitForPodCompleted(ctx, clientset, deployOptions.Namespace, checkPod.Name, time.Minute*2); err != nil {
-		return false, errors.Wrap(err, "failed to wait for nfs minio check pod to complete")
+		finalErr = errors.Wrap(err, "failed to wait for nfs minio check pod to complete")
+		return
 	}
 
 	defer func() {
@@ -577,10 +587,12 @@ func shouldResetNFSMount(ctx context.Context, clientset kubernetes.Interface, de
 
 	logs, err := getPodLogs(ctx, clientset, checkPod)
 	if err != nil {
-		return false, errors.Wrap(err, "failed to get nfs minio check pod logs")
+		finalErr = errors.Wrap(err, "failed to get nfs minio check pod logs")
+		return
 	}
 	if len(logs) == 0 {
-		return false, errors.New("no logs found")
+		finalErr = errors.New("no logs found")
+		return
 	}
 
 	type NFSMinioCheckPodOutput struct {
@@ -602,28 +614,38 @@ func shouldResetNFSMount(ctx context.Context, clientset kubernetes.Interface, de
 	}
 
 	if !checkPodOutput.HasMinioConfig {
-		return false, nil
+		shouldReset = false
+		hasMinioConfig = false
+		return
 	}
 
 	if checkPodOutput.MinioKeysSHA == "" {
-		return true, nil
+		shouldReset = true
+		hasMinioConfig = true
+		return
 	}
 
 	minioSecret, err := clientset.CoreV1().Secrets(deployOptions.Namespace).Get(ctx, NFSMinioSecretName, metav1.GetOptions{})
 	if err != nil {
 		if !kuberneteserrors.IsNotFound(err) {
-			return false, errors.Wrap(err, "failed to get existing minio secret")
+			finalErr = errors.Wrap(err, "failed to get existing minio secret")
+			return
 		}
-
-		return true, nil
+		shouldReset = true
+		hasMinioConfig = true
+		return
 	}
 
-	newMinioKeysSHA := fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%s,%s", string(minioSecret.Data["MINIO_ACCESS_KEY"]), string(minioSecret.Data["MINIO_SECRET_KEY"])))))
+	newMinioKeysSHA := getMinioKeysSHA(string(minioSecret.Data["MINIO_ACCESS_KEY"]), string(minioSecret.Data["MINIO_SECRET_KEY"]))
 	if newMinioKeysSHA == checkPodOutput.MinioKeysSHA {
-		return false, nil
+		shouldReset = false
+		hasMinioConfig = true
+		return
 	}
 
-	return true, nil
+	shouldReset = true
+	hasMinioConfig = true
+	return
 }
 
 func resetNFSMount(ctx context.Context, clientset kubernetes.Interface, deployOptions NFSDeployOptions, registryOptions kotsadmtypes.KotsadmOptions) error {
@@ -644,13 +666,47 @@ func resetNFSMount(ctx context.Context, clientset kubernetes.Interface, deployOp
 		}
 	}()
 
-	// TODO NOW: write keys sha file
+	return nil
+}
+
+func createMinioKeysSHAFile(ctx context.Context, clientset kubernetes.Interface, deployOptions NFSDeployOptions, registryOptions kotsadmtypes.KotsadmOptions) error {
+	minioSecret, err := clientset.CoreV1().Secrets(deployOptions.Namespace).Get(ctx, NFSMinioSecretName, metav1.GetOptions{})
+	if err != nil {
+		return errors.Wrap(err, "failed to get existing minio secret")
+	}
+
+	minioKeysSHA := getMinioKeysSHA(string(minioSecret.Data["MINIO_ACCESS_KEY"]), string(minioSecret.Data["MINIO_SECRET_KEY"]))
+
+	keysSHAPod, err := createNFSMinioKeysSHAPod(ctx, clientset, deployOptions, registryOptions, minioKeysSHA)
+	if err != nil {
+		return errors.Wrap(err, "failed to create nfs minio keysSHA pod")
+	}
+
+	if err := waitForPodCompleted(ctx, clientset, deployOptions.Namespace, keysSHAPod.Name, time.Minute*2); err != nil {
+		return errors.Wrap(err, "failed to wait for nfs minio keysSHA pod to complete")
+	}
+
+	defer func() {
+		// clean up
+		err := clientset.CoreV1().Pods(deployOptions.Namespace).Delete(ctx, keysSHAPod.Name, metav1.DeleteOptions{})
+		if err != nil {
+			// TODO NOW (log error)
+		}
+	}()
 
 	return nil
 }
 
+func getMinioKeysSHA(accessKey, secretKey string) string {
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%s,%s", accessKey, secretKey))))
+}
+
 func createNFSMinioCheckPod(ctx context.Context, clientset kubernetes.Interface, deployOptions NFSDeployOptions, registryOptions kotsadmtypes.KotsadmOptions) (*corev1.Pod, error) {
-	pod := nfsMinioCheckPod(ctx, clientset, deployOptions, registryOptions)
+	pod, err := nfsMinioCheckPod(ctx, clientset, deployOptions, registryOptions)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to get pod resource")
+	}
+
 	p, err := clientset.CoreV1().Pods(deployOptions.Namespace).Create(ctx, pod, metav1.CreateOptions{})
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to create pod")
@@ -660,7 +716,11 @@ func createNFSMinioCheckPod(ctx context.Context, clientset kubernetes.Interface,
 }
 
 func createNFSMinioResetPod(ctx context.Context, clientset kubernetes.Interface, deployOptions NFSDeployOptions, registryOptions kotsadmtypes.KotsadmOptions) (*corev1.Pod, error) {
-	pod := nfsMinioResetPod(ctx, clientset, deployOptions, registryOptions)
+	pod, err := nfsMinioResetPod(ctx, clientset, deployOptions, registryOptions)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to get pod resource")
+	}
+
 	p, err := clientset.CoreV1().Pods(deployOptions.Namespace).Create(ctx, pod, metav1.CreateOptions{})
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to create pod")
@@ -669,20 +729,42 @@ func createNFSMinioResetPod(ctx context.Context, clientset kubernetes.Interface,
 	return p, nil
 }
 
-func nfsMinioCheckPod(ctx context.Context, clientset kubernetes.Interface, deployOptions NFSDeployOptions, registryOptions kotsadmtypes.KotsadmOptions) *corev1.Pod {
+func createNFSMinioKeysSHAPod(ctx context.Context, clientset kubernetes.Interface, deployOptions NFSDeployOptions, registryOptions kotsadmtypes.KotsadmOptions, minioKeysSHA string) (*corev1.Pod, error) {
+	pod, err := nfsMinioKeysSHAPod(ctx, clientset, deployOptions, registryOptions, minioKeysSHA)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to get pod resource")
+	}
+
+	p, err := clientset.CoreV1().Pods(deployOptions.Namespace).Create(ctx, pod, metav1.CreateOptions{})
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to create pod")
+	}
+
+	return p, nil
+}
+
+func nfsMinioCheckPod(ctx context.Context, clientset kubernetes.Interface, deployOptions NFSDeployOptions, registryOptions kotsadmtypes.KotsadmOptions) (*corev1.Pod, error) {
 	podName := fmt.Sprintf("kotsadm-nfs-minio-check-%d", time.Now().Unix())
 	// TODO NOW move to .sh file?
-	command := `if [ ! -d /nfs/.minio.sys/config ]; then echo '{"hasMinioConfig": false}'; elif [ ! -f /nfs/.kots/minio-keys-sha.txt ]; then echo '{"hasMinioConfig": true}'; else SHA=$(cat /nfs/.kots/minio-keys-sha.txt); echo '{"hasMinioConfig": true, "minioKeysSHA":"'"$SHA"'"}'; fi`
-	return nfsMinioConfigPod(deployOptions, registryOptions, podName, command, true)
+	command := `if [ ! -d /nfs/.minio.sys/config ]; then echo '{"hasMinioConfig": false}'; elif [ ! -f /nfs/.kots/minio-keys-sha.txt ]; then echo '{"hasMinioConfig": true}'; else MINIO_KEYS_SHA=$(cat /nfs/.kots/minio-keys-sha.txt) && echo '{"hasMinioConfig": true, "minioKeysSHA":"'"$MINIO_KEYS_SHA"'"}'; fi`
+	return nfsMinioConfigPod(clientset, deployOptions, registryOptions, podName, command, true)
 }
 
-func nfsMinioResetPod(ctx context.Context, clientset kubernetes.Interface, deployOptions NFSDeployOptions, registryOptions kotsadmtypes.KotsadmOptions) *corev1.Pod {
+func nfsMinioResetPod(ctx context.Context, clientset kubernetes.Interface, deployOptions NFSDeployOptions, registryOptions kotsadmtypes.KotsadmOptions) (*corev1.Pod, error) {
 	podName := fmt.Sprintf("kotsadm-nfs-minio-reset-%d", time.Now().Unix())
-	command := `rm -rf /nfs/.minio.sys/config`
-	return nfsMinioConfigPod(deployOptions, registryOptions, podName, command, false)
+	// TODO NOW move to .sh file?
+	command := "rm -rf /nfs/.minio.sys/config"
+	return nfsMinioConfigPod(clientset, deployOptions, registryOptions, podName, command, false)
 }
 
-func nfsMinioConfigPod(deployOptions NFSDeployOptions, registryOptions kotsadmtypes.KotsadmOptions, podName string, command string, readOnly bool) *corev1.Pod {
+func nfsMinioKeysSHAPod(ctx context.Context, clientset kubernetes.Interface, deployOptions NFSDeployOptions, registryOptions kotsadmtypes.KotsadmOptions, minioKeysSHA string) (*corev1.Pod, error) {
+	podName := fmt.Sprintf("kotsadm-nfs-minio-keys-sha-%d", time.Now().Unix())
+	// TODO NOW move to .sh file?
+	command := fmt.Sprintf("if [ ! -d /nfs/.kots ]; then mkdir -p -m 777 /nfs/.kots; fi; echo %s > /nfs/.kots/minio-keys-sha.txt", minioKeysSHA)
+	return nfsMinioConfigPod(clientset, deployOptions, registryOptions, podName, command, false)
+}
+
+func nfsMinioConfigPod(clientset kubernetes.Interface, deployOptions NFSDeployOptions, registryOptions kotsadmtypes.KotsadmOptions, podName string, command string, readOnly bool) (*corev1.Pod, error) {
 	var securityContext corev1.PodSecurityContext
 	if !deployOptions.IsOpenShift {
 		securityContext = corev1.PodSecurityContext{
@@ -691,12 +773,16 @@ func nfsMinioConfigPod(deployOptions NFSDeployOptions, registryOptions kotsadmty
 		}
 	}
 
-	var pullSecrets []corev1.LocalObjectReference
-	if s := kotsadmversion.KotsadmPullSecret(deployOptions.Namespace, registryOptions); s != nil {
-		pullSecrets = []corev1.LocalObjectReference{
-			{
-				Name: s.ObjectMeta.Name,
-			},
+	kotsadmTag := kotsadmversion.KotsadmTag(kotsadmtypes.KotsadmOptions{}) // default tag
+	image := fmt.Sprintf("kotsadm/kotsadm:%s", kotsadmTag)
+	imagePullSecrets := []corev1.LocalObjectReference{}
+
+	if !kotsutil.IsKurl(clientset) || deployOptions.Namespace != metav1.NamespaceDefault {
+		var err error
+		imageRewriteFn := kotsadmversion.ImageRewriteKotsadmRegistry(deployOptions.Namespace, &registryOptions)
+		image, imagePullSecrets, err = imageRewriteFn(image, false)
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to rewrite image")
 		}
 	}
 
@@ -712,7 +798,7 @@ func nfsMinioConfigPod(deployOptions NFSDeployOptions, registryOptions kotsadmty
 		Spec: corev1.PodSpec{
 			SecurityContext:  &securityContext,
 			RestartPolicy:    corev1.RestartPolicyOnFailure,
-			ImagePullSecrets: pullSecrets,
+			ImagePullSecrets: imagePullSecrets,
 			Volumes: []corev1.Volume{
 				{
 					Name: "nfs",
@@ -726,7 +812,7 @@ func nfsMinioConfigPod(deployOptions NFSDeployOptions, registryOptions kotsadmty
 			},
 			Containers: []corev1.Container{
 				{
-					Image:           fmt.Sprintf("%s/kotsadm:%s", kotsadmversion.KotsadmRegistry(registryOptions), kotsadmversion.KotsadmTag(registryOptions)),
+					Image:           image,
 					ImagePullPolicy: corev1.PullIfNotPresent,
 					Name:            "minio-check",
 					Command: []string{
@@ -756,7 +842,7 @@ func nfsMinioConfigPod(deployOptions NFSDeployOptions, registryOptions kotsadmty
 		},
 	}
 
-	return pod
+	return pod, nil
 }
 
 func waitForPodCompleted(ctx context.Context, clientset kubernetes.Interface, namespace string, podName string, timeoutWaitingForPod time.Duration) error {
@@ -809,4 +895,58 @@ func getPodLogs(ctx context.Context, clientset kubernetes.Interface, pod *corev1
 	case <-ctx.Done():
 		return nil, errors.Wrap(ctx.Err(), "context ended copying logs")
 	}
+}
+
+func GetNFSResetWarningMsg(nfsPath string) string {
+	return fmt.Sprintf("The %s directory was previously configured by a different minio instance. Proceeding will re-configure it to be used only by this new minio instance, and any other minio instance using this location will no longer have access. If you are attempting to fully restore a prior installation, such as a disaster recovery scenario, this action is expected. Would you like to continue? [y/N]", nfsPath)
+}
+
+func CreateNFSBucket(ctx context.Context, clientset kubernetes.Interface, namespace string) error {
+	secret, err := clientset.CoreV1().Secrets(namespace).Get(ctx, NFSMinioSecretName, metav1.GetOptions{})
+	if err != nil {
+		return errors.Wrap(err, "failed to get nfs minio secret")
+	}
+
+	service, err := clientset.CoreV1().Services(namespace).Get(ctx, NFSMinioServiceName, metav1.GetOptions{})
+	if err != nil {
+		return errors.Wrap(err, "failed to get nfs minio service")
+	}
+
+	endpoint := fmt.Sprintf("http://%s:%d", service.Spec.ClusterIP, service.Spec.Ports[0].Port)
+	accessKeyID := string(secret.Data["MINIO_ACCESS_KEY"])
+	secretAccessKey := string(secret.Data["MINIO_SECRET_KEY"])
+
+	s3Config := &aws.Config{
+		Region:           aws.String(NFSMinioRegion),
+		Endpoint:         aws.String(endpoint),
+		DisableSSL:       aws.Bool(true), // TODO: this needs to be configurable
+		S3ForcePathStyle: aws.Bool(true),
+	}
+
+	if accessKeyID != "" && secretAccessKey != "" {
+		s3Config.Credentials = credentials.NewStaticCredentials(accessKeyID, secretAccessKey, "")
+	}
+
+	newSession := session.New(s3Config)
+	s3Client := s3.New(newSession)
+
+	_, err = s3Client.HeadBucket(&s3.HeadBucketInput{
+		Bucket: aws.String(NFSMinioBucketName),
+	})
+
+	if err != nil {
+		if aerr, ok := err.(awserr.Error); ok {
+			if aerr.Code() == "NotFound" {
+				_, err = s3Client.CreateBucket(&s3.CreateBucketInput{
+					Bucket: aws.String(NFSMinioBucketName),
+				})
+				if err != nil {
+					return errors.Wrap(err, "failed to create bucket")
+				}
+			}
+		}
+		return errors.Wrap(err, "failed to check if bucket exists")
+	}
+
+	return nil
 }

@@ -84,9 +84,9 @@ func BackupConfigureNFSCmd() *cobra.Command {
 			}
 
 			log.FinishSpinner()
-			log.ActionWithSpinner("Waiting for NFS Minio to by ready")
+			log.ActionWithSpinner("Waiting for NFS Minio to be ready")
 
-			_, err = snapshot.WaitForNFSMinio(cmd.Context(), clientset, namespace, time.Minute*5)
+			err = snapshot.WaitForNFSMinioReady(cmd.Context(), clientset, namespace, time.Minute*5)
 			if err != nil {
 				log.FinishSpinnerWithError()
 				return errors.Wrap(err, "failed to wait for nfs minio")
@@ -153,17 +153,12 @@ func BackupConfigureNFSCmd() *cobra.Command {
 }
 
 func promptForNFSReset(nfsPath string) bool {
-	templates := &promptui.PromptTemplates{
-		Confirm: "{{ . | red }} ",
-	}
-
 	// TODO NOW: new lines
-	label := fmt.Sprintf("The %s directory was previously configured by a different minio instance. Proceeding will re-configure it to be used only by this new minio instance, and any other minio instance using this location will no longer have access. If you are attempting to fully restore a prior installation, such as a disaster recovery scenario, this action is expected. Would you like to continue? [y/N]", nfsPath)
+	label := snapshot.GetNFSResetWarningMsg(nfsPath)
 
 	prompt := promptui.Prompt{
 		Label:     label,
 		IsConfirm: true,
-		Templates: templates,
 	}
 
 	for {
