@@ -1,8 +1,12 @@
 package cli
 
 import (
+	"fmt"
+	"os"
+	"strings"
 	"time"
 
+	"github.com/manifoldco/promptui"
 	"github.com/pkg/errors"
 	"github.com/replicatedhq/kots/pkg/k8sutil"
 	"github.com/replicatedhq/kots/pkg/kotsadm"
@@ -54,6 +58,7 @@ func BackupConfigureNFSCmd() *cobra.Command {
 			log.ActionWithSpinner("Setting up NFS Minio")
 
 			deployOptions := snapshot.NFSDeployOptions{
+				Namespace:   namespace,
 				IsOpenShift: k8sutil.IsOpenShift(clientset),
 				NFSOptions: snapshot.NFSOptions{
 					Path:    nfsPath,
@@ -61,9 +66,22 @@ func BackupConfigureNFSCmd() *cobra.Command {
 					Storage: v.GetString("storage"),
 				},
 			}
-			if err := snapshot.DeployNFSMinio(cmd.Context(), clientset, namespace, deployOptions, &registryOptions); err != nil {
-				log.FinishSpinnerWithError()
-				return errors.Wrap(err, "failed to deploy nfs minio")
+			if err := snapshot.DeployNFSMinio(cmd.Context(), clientset, deployOptions, &registryOptions); err != nil {
+				if _, ok := err.(*snapshot.ResetNFSError); ok {
+					log.FinishSpinner()
+					forceReset := promptForNFSReset(nfsPath)
+					if forceReset {
+						log.ActionWithSpinner("Re-configuring NFS Minio")
+						deployOptions.ForceReset = true
+						if err := snapshot.DeployNFSMinio(cmd.Context(), clientset, deployOptions, &registryOptions); err != nil {
+							log.FinishSpinnerWithError()
+							return errors.Wrap(err, "failed to force deploy nfs minio")
+						}
+					}
+				} else {
+					log.FinishSpinnerWithError()
+					return errors.Wrap(err, "failed to deploy nfs minio")
+				}
 			}
 
 			log.FinishSpinner()
@@ -84,9 +102,6 @@ func BackupConfigureNFSCmd() *cobra.Command {
 				return errors.Wrap(err, "failed to create default bucket")
 			}
 
-			log.FinishSpinner()
-			log.ActionWithSpinner("Configuring Velero")
-
 			veleroNamespace, err := snapshot.DetectVeleroNamespace()
 			if err != nil {
 				log.FinishSpinnerWithError()
@@ -102,6 +117,9 @@ func BackupConfigureNFSCmd() *cobra.Command {
 				log.ActionWithoutSpinner("")
 				return nil
 			}
+
+			log.FinishSpinner()
+			log.ActionWithSpinner("Configuring Velero")
 
 			_, err = snapshot.GetGlobalStore(nil)
 			if err != nil {
@@ -130,4 +148,33 @@ func BackupConfigureNFSCmd() *cobra.Command {
 	cmd.Flags().StringP("namespace", "n", "", "the namespace in which kots/kotsadm is installed")
 
 	return cmd
+}
+
+func promptForNFSReset(nfsPath string) bool {
+	templates := &promptui.PromptTemplates{
+		Confirm: "{{ . | red }} ",
+	}
+
+	// TODO NOW: new lines
+	label := fmt.Sprintf("The %s directory was previously configured by a different minio instance. Proceeding will re-configure it to be used only by this new minio instance, and any other minio instance using this location will no longer have access. If you are attempting to fully restore a prior installation, such as a disaster recovery scenario, this action is expected. Would you like to continue? [y/N]", nfsPath)
+
+	prompt := promptui.Prompt{
+		Label:     label,
+		IsConfirm: true,
+		Templates: templates,
+	}
+
+	for {
+		// TODO NOW: don't print msg on each key stroke
+		resp, err := prompt.Run()
+		if err == promptui.ErrInterrupt {
+			os.Exit(-1)
+		}
+		if strings.ToLower(resp) == "n" {
+			os.Exit(-1)
+		}
+		if strings.ToLower(resp) == "y" {
+			return true
+		}
+	}
 }
