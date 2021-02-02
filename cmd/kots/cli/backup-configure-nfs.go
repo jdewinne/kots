@@ -9,7 +9,6 @@ import (
 	"github.com/manifoldco/promptui"
 	"github.com/pkg/errors"
 	"github.com/replicatedhq/kots/pkg/k8sutil"
-	"github.com/replicatedhq/kots/pkg/kotsadm"
 	"github.com/replicatedhq/kots/pkg/logger"
 	"github.com/replicatedhq/kots/pkg/snapshot"
 	"github.com/spf13/cobra"
@@ -49,9 +48,9 @@ func BackupConfigureNFSCmd() *cobra.Command {
 				return errors.Wrap(err, "failed to get clientset")
 			}
 
-			registryOptions, err := kotsadm.GetKotsadmOptionsFromCluster(namespace, clientset)
+			registryOptions, err := getRegistryConfig(v)
 			if err != nil {
-				return errors.Wrap(err, "failed to get kotsadm options from cluster")
+				return errors.Wrap(err, "failed to get registry config")
 			}
 
 			log := logger.NewLogger()
@@ -66,14 +65,14 @@ func BackupConfigureNFSCmd() *cobra.Command {
 					Storage: v.GetString("storage"),
 				},
 			}
-			if err := snapshot.DeployNFSMinio(cmd.Context(), clientset, deployOptions, &registryOptions); err != nil {
+			if err := snapshot.DeployNFSMinio(cmd.Context(), clientset, deployOptions, *registryOptions); err != nil {
 				if _, ok := err.(*snapshot.ResetNFSError); ok {
 					log.FinishSpinner()
 					forceReset := promptForNFSReset(nfsPath)
 					if forceReset {
 						log.ActionWithSpinner("Re-configuring NFS Minio")
 						deployOptions.ForceReset = true
-						if err := snapshot.DeployNFSMinio(cmd.Context(), clientset, deployOptions, &registryOptions); err != nil {
+						if err := snapshot.DeployNFSMinio(cmd.Context(), clientset, deployOptions, *registryOptions); err != nil {
 							log.FinishSpinnerWithError()
 							return errors.Wrap(err, "failed to force deploy nfs minio")
 						}
@@ -146,6 +145,9 @@ func BackupConfigureNFSCmd() *cobra.Command {
 	cmd.Flags().String("server", "", "the hostname or IP address of the NFS server")
 	cmd.Flags().String("storage", "10Gi", "the storage capacity to be request")
 	cmd.Flags().StringP("namespace", "n", "", "the namespace in which kots/kotsadm is installed")
+	cmd.Flags().Bool("airgap", false, "set to true to run in airgapped mode.")
+
+	registryFlags(cmd.Flags())
 
 	return cmd
 }

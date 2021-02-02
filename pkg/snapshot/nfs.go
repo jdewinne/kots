@@ -61,7 +61,7 @@ func (e ResetNFSError) Error() string {
 	return e.Message
 }
 
-func DeployNFSMinio(ctx context.Context, clientset kubernetes.Interface, deployOptions NFSDeployOptions, registryOptions *kotsadmtypes.KotsadmOptions) error {
+func DeployNFSMinio(ctx context.Context, clientset kubernetes.Interface, deployOptions NFSDeployOptions, registryOptions kotsadmtypes.KotsadmOptions) error {
 	shouldReset, err := shouldResetNFSMount(ctx, clientset, deployOptions, registryOptions)
 	if err != nil {
 		return errors.Wrap(err, "failed to check if should reset nfs mount")
@@ -239,7 +239,7 @@ func secretResource() *corev1.Secret {
 	}
 }
 
-func ensureDeployment(ctx context.Context, clientset kubernetes.Interface, deployOptions NFSDeployOptions, registryOptions *kotsadmtypes.KotsadmOptions, marshalledSecret []byte) error {
+func ensureDeployment(ctx context.Context, clientset kubernetes.Interface, deployOptions NFSDeployOptions, registryOptions kotsadmtypes.KotsadmOptions, marshalledSecret []byte) error {
 	secretChecksum := fmt.Sprintf("%x", md5.Sum(marshalledSecret))
 
 	deployment, err := deploymentResource(clientset, secretChecksum, deployOptions, registryOptions)
@@ -271,13 +271,14 @@ func ensureDeployment(ctx context.Context, clientset kubernetes.Interface, deplo
 	return nil
 }
 
-func deploymentResource(clientset kubernetes.Interface, secretChecksum string, deployOptions NFSDeployOptions, registryOptions *kotsadmtypes.KotsadmOptions) (*appsv1.Deployment, error) {
-	image := "minio/minio:RELEASE.2020-01-25T02-50-51Z"
+func deploymentResource(clientset kubernetes.Interface, secretChecksum string, deployOptions NFSDeployOptions, registryOptions kotsadmtypes.KotsadmOptions) (*appsv1.Deployment, error) {
+	kotsadmTag := kotsadmversion.KotsadmTag(kotsadmtypes.KotsadmOptions{}) // default tag
+	image := fmt.Sprintf("kotsadm/minio:%s", kotsadmTag)
 	imagePullSecrets := []corev1.LocalObjectReference{}
 
 	if !kotsutil.IsKurl(clientset) || deployOptions.Namespace != metav1.NamespaceDefault {
 		var err error
-		imageRewriteFn := kotsadmversion.ImageRewriteKotsadmRegistry(deployOptions.Namespace, registryOptions)
+		imageRewriteFn := kotsadmversion.ImageRewriteKotsadmRegistry(deployOptions.Namespace, &registryOptions)
 		image, imagePullSecrets, err = imageRewriteFn(image, false)
 		if err != nil {
 			return nil, errors.Wrap(err, "failed to rewrite image")
@@ -287,7 +288,8 @@ func deploymentResource(clientset kubernetes.Interface, secretChecksum string, d
 	var securityContext corev1.PodSecurityContext
 	if !deployOptions.IsOpenShift {
 		securityContext = corev1.PodSecurityContext{
-			RunAsUser: pointer.Int64Ptr(1001),
+			RunAsUser: util.IntPointer(1001),
+			FSGroup:   util.IntPointer(1001),
 		}
 	}
 
@@ -555,7 +557,7 @@ func CreateNFSBucket(ctx context.Context, clientset *kubernetes.Clientset, names
 	return nil
 }
 
-func shouldResetNFSMount(ctx context.Context, clientset kubernetes.Interface, deployOptions NFSDeployOptions, registryOptions *kotsadmtypes.KotsadmOptions) (bool, error) {
+func shouldResetNFSMount(ctx context.Context, clientset kubernetes.Interface, deployOptions NFSDeployOptions, registryOptions kotsadmtypes.KotsadmOptions) (bool, error) {
 	checkPod, err := createNFSMinioCheckPod(ctx, clientset, deployOptions, registryOptions)
 	if err != nil {
 		return false, errors.Wrap(err, "failed to create nfs minio check pod")
@@ -624,7 +626,7 @@ func shouldResetNFSMount(ctx context.Context, clientset kubernetes.Interface, de
 	return true, nil
 }
 
-func resetNFSMount(ctx context.Context, clientset kubernetes.Interface, deployOptions NFSDeployOptions, registryOptions *kotsadmtypes.KotsadmOptions) error {
+func resetNFSMount(ctx context.Context, clientset kubernetes.Interface, deployOptions NFSDeployOptions, registryOptions kotsadmtypes.KotsadmOptions) error {
 	resetPod, err := createNFSMinioResetPod(ctx, clientset, deployOptions, registryOptions)
 	if err != nil {
 		return errors.Wrap(err, "failed to create nfs minio reset pod")
@@ -647,7 +649,7 @@ func resetNFSMount(ctx context.Context, clientset kubernetes.Interface, deployOp
 	return nil
 }
 
-func createNFSMinioCheckPod(ctx context.Context, clientset kubernetes.Interface, deployOptions NFSDeployOptions, registryOptions *kotsadmtypes.KotsadmOptions) (*corev1.Pod, error) {
+func createNFSMinioCheckPod(ctx context.Context, clientset kubernetes.Interface, deployOptions NFSDeployOptions, registryOptions kotsadmtypes.KotsadmOptions) (*corev1.Pod, error) {
 	pod := nfsMinioCheckPod(ctx, clientset, deployOptions, registryOptions)
 	p, err := clientset.CoreV1().Pods(deployOptions.Namespace).Create(ctx, pod, metav1.CreateOptions{})
 	if err != nil {
@@ -657,7 +659,7 @@ func createNFSMinioCheckPod(ctx context.Context, clientset kubernetes.Interface,
 	return p, nil
 }
 
-func createNFSMinioResetPod(ctx context.Context, clientset kubernetes.Interface, deployOptions NFSDeployOptions, registryOptions *kotsadmtypes.KotsadmOptions) (*corev1.Pod, error) {
+func createNFSMinioResetPod(ctx context.Context, clientset kubernetes.Interface, deployOptions NFSDeployOptions, registryOptions kotsadmtypes.KotsadmOptions) (*corev1.Pod, error) {
 	pod := nfsMinioResetPod(ctx, clientset, deployOptions, registryOptions)
 	p, err := clientset.CoreV1().Pods(deployOptions.Namespace).Create(ctx, pod, metav1.CreateOptions{})
 	if err != nil {
@@ -667,20 +669,20 @@ func createNFSMinioResetPod(ctx context.Context, clientset kubernetes.Interface,
 	return p, nil
 }
 
-func nfsMinioCheckPod(ctx context.Context, clientset kubernetes.Interface, deployOptions NFSDeployOptions, registryOptions *kotsadmtypes.KotsadmOptions) *corev1.Pod {
+func nfsMinioCheckPod(ctx context.Context, clientset kubernetes.Interface, deployOptions NFSDeployOptions, registryOptions kotsadmtypes.KotsadmOptions) *corev1.Pod {
 	podName := fmt.Sprintf("kotsadm-nfs-minio-check-%d", time.Now().Unix())
 	// TODO NOW move to .sh file?
 	command := `if [ ! -d /nfs/.minio.sys/config ]; then echo '{"hasMinioConfig": false}'; elif [ ! -f /nfs/.kots/minio-keys-sha.txt ]; then echo '{"hasMinioConfig": true}'; else SHA=$(cat /nfs/.kots/minio-keys-sha.txt); echo '{"hasMinioConfig": true, "minioKeysSHA":"'"$SHA"'"}'; fi`
 	return nfsMinioConfigPod(deployOptions, registryOptions, podName, command, true)
 }
 
-func nfsMinioResetPod(ctx context.Context, clientset kubernetes.Interface, deployOptions NFSDeployOptions, registryOptions *kotsadmtypes.KotsadmOptions) *corev1.Pod {
+func nfsMinioResetPod(ctx context.Context, clientset kubernetes.Interface, deployOptions NFSDeployOptions, registryOptions kotsadmtypes.KotsadmOptions) *corev1.Pod {
 	podName := fmt.Sprintf("kotsadm-nfs-minio-reset-%d", time.Now().Unix())
 	command := `rm -rf /nfs/.minio.sys/config`
 	return nfsMinioConfigPod(deployOptions, registryOptions, podName, command, false)
 }
 
-func nfsMinioConfigPod(deployOptions NFSDeployOptions, registryOptions *kotsadmtypes.KotsadmOptions, podName string, command string, readOnly bool) *corev1.Pod {
+func nfsMinioConfigPod(deployOptions NFSDeployOptions, registryOptions kotsadmtypes.KotsadmOptions, podName string, command string, readOnly bool) *corev1.Pod {
 	var securityContext corev1.PodSecurityContext
 	if !deployOptions.IsOpenShift {
 		securityContext = corev1.PodSecurityContext{
@@ -690,7 +692,7 @@ func nfsMinioConfigPod(deployOptions NFSDeployOptions, registryOptions *kotsadmt
 	}
 
 	var pullSecrets []corev1.LocalObjectReference
-	if s := kotsadmversion.KotsadmPullSecret(deployOptions.Namespace, *registryOptions); s != nil {
+	if s := kotsadmversion.KotsadmPullSecret(deployOptions.Namespace, registryOptions); s != nil {
 		pullSecrets = []corev1.LocalObjectReference{
 			{
 				Name: s.ObjectMeta.Name,
@@ -724,7 +726,7 @@ func nfsMinioConfigPod(deployOptions NFSDeployOptions, registryOptions *kotsadmt
 			},
 			Containers: []corev1.Container{
 				{
-					Image:           fmt.Sprintf("%s/kotsadm:%s", kotsadmversion.KotsadmRegistry(*registryOptions), kotsadmversion.KotsadmTag(*registryOptions)),
+					Image:           fmt.Sprintf("%s/kotsadm:%s", kotsadmversion.KotsadmRegistry(registryOptions), kotsadmversion.KotsadmTag(registryOptions)),
 					ImagePullPolicy: corev1.PullIfNotPresent,
 					Name:            "minio-check",
 					Command: []string{
