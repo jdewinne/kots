@@ -576,14 +576,7 @@ func shouldResetNFSMount(ctx context.Context, clientset kubernetes.Interface, de
 		finalErr = errors.Wrap(err, "failed to wait for nfs minio check pod to complete")
 		return
 	}
-
-	defer func() {
-		// clean up
-		err := clientset.CoreV1().Pods(deployOptions.Namespace).Delete(ctx, checkPod.Name, metav1.DeleteOptions{})
-		if err != nil {
-			// TODO NOW (log error)
-		}
-	}()
+	defer clientset.CoreV1().Pods(deployOptions.Namespace).Delete(ctx, checkPod.Name, metav1.DeleteOptions{})
 
 	logs, err := getPodLogs(ctx, clientset, checkPod)
 	if err != nil {
@@ -658,13 +651,7 @@ func resetNFSMount(ctx context.Context, clientset kubernetes.Interface, deployOp
 		return errors.Wrap(err, "failed to wait for nfs minio reset pod to complete")
 	}
 
-	defer func() {
-		// clean up
-		err := clientset.CoreV1().Pods(deployOptions.Namespace).Delete(ctx, resetPod.Name, metav1.DeleteOptions{})
-		if err != nil {
-			// TODO NOW (log error)
-		}
-	}()
+	clientset.CoreV1().Pods(deployOptions.Namespace).Delete(ctx, resetPod.Name, metav1.DeleteOptions{})
 
 	return nil
 }
@@ -686,13 +673,7 @@ func createMinioKeysSHAFile(ctx context.Context, clientset kubernetes.Interface,
 		return errors.Wrap(err, "failed to wait for nfs minio keysSHA pod to complete")
 	}
 
-	defer func() {
-		// clean up
-		err := clientset.CoreV1().Pods(deployOptions.Namespace).Delete(ctx, keysSHAPod.Name, metav1.DeleteOptions{})
-		if err != nil {
-			// TODO NOW (log error)
-		}
-	}()
+	clientset.CoreV1().Pods(deployOptions.Namespace).Delete(ctx, keysSHAPod.Name, metav1.DeleteOptions{})
 
 	return nil
 }
