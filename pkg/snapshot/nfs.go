@@ -43,6 +43,7 @@ const (
 type NFSDeployOptions struct {
 	// TODO NOW: move namespace here?
 	IsOpenShift bool
+	ForceReset  bool
 	NFSOptions  NFSOptions
 }
 
@@ -52,11 +53,27 @@ type NFSOptions struct {
 	Storage string
 }
 
+type ResetNFSError struct {
+	Message string
+}
+
+func (e ResetNFSError) Error() string {
+	return e.Message
+}
+
 func DeployNFSMinio(ctx context.Context, clientset kubernetes.Interface, namespace string, deployOptions NFSDeployOptions, registryOptions *kotsadmtypes.KotsadmOptions) error {
-	// TODO NOW: use this
-	_, err := shouldResetNFSMount(ctx, clientset, namespace, deployOptions, registryOptions)
+	shouldReset, err := shouldResetNFSMount(ctx, clientset, namespace, deployOptions, registryOptions)
 	if err != nil {
 		return errors.Wrap(err, "failed to check if should reset nfs mount")
+	}
+	if shouldReset {
+		if !deployOptions.ForceReset {
+			return &ResetNFSError{Message: "nfs mount is already configured with a different minio instance"}
+		}
+		err := resetNFSMount(ctx, clientset, namespace, deployOptions, registryOptions)
+		if err != nil {
+			return errors.Wrap(err, "failed to reset nfs mount")
+		}
 	}
 
 	// deploy resources
@@ -607,8 +624,31 @@ func shouldResetNFSMount(ctx context.Context, clientset kubernetes.Interface, na
 	return true, nil
 }
 
+func resetNFSMount(ctx context.Context, clientset kubernetes.Interface, namespace string, deployOptions NFSDeployOptions, registryOptions *kotsadmtypes.KotsadmOptions) error {
+	resetPod, err := createNFSMinioResetPod(ctx, clientset, namespace, deployOptions, registryOptions)
+	if err != nil {
+		return errors.Wrap(err, "failed to create nfs minio reset pod")
+	}
+
+	if err := waitForPodCompleted(ctx, clientset, namespace, resetPod.Name, time.Minute*2); err != nil {
+		return errors.Wrap(err, "failed to wait for nfs minio reset pod to complete")
+	}
+
+	defer func() {
+		// clean up
+		err := clientset.CoreV1().Pods(namespace).Delete(ctx, resetPod.Name, metav1.DeleteOptions{})
+		if err != nil {
+			// TODO NOW (log error)
+		}
+	}()
+
+	// TODO NOW: write keys sha file
+
+	return nil
+}
+
 func createNFSMinioCheckPod(ctx context.Context, clientset kubernetes.Interface, namespace string, deployOptions NFSDeployOptions, registryOptions *kotsadmtypes.KotsadmOptions) (*corev1.Pod, error) {
-	pod := nfsMinioCheckPod(namespace, deployOptions, registryOptions)
+	pod := nfsMinioCheckPod(ctx, clientset, namespace, deployOptions, registryOptions)
 	p, err := clientset.CoreV1().Pods(namespace).Create(ctx, pod, metav1.CreateOptions{})
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to create pod")
@@ -617,9 +657,30 @@ func createNFSMinioCheckPod(ctx context.Context, clientset kubernetes.Interface,
 	return p, nil
 }
 
-func nfsMinioCheckPod(namespace string, deployOptions NFSDeployOptions, registryOptions *kotsadmtypes.KotsadmOptions) *corev1.Pod {
-	name := fmt.Sprintf("kotsadm-nfs-minio-check-%d", time.Now().Unix())
+func createNFSMinioResetPod(ctx context.Context, clientset kubernetes.Interface, namespace string, deployOptions NFSDeployOptions, registryOptions *kotsadmtypes.KotsadmOptions) (*corev1.Pod, error) {
+	pod := nfsMinioResetPod(ctx, clientset, namespace, deployOptions, registryOptions)
+	p, err := clientset.CoreV1().Pods(namespace).Create(ctx, pod, metav1.CreateOptions{})
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to create pod")
+	}
 
+	return p, nil
+}
+
+func nfsMinioCheckPod(ctx context.Context, clientset kubernetes.Interface, namespace string, deployOptions NFSDeployOptions, registryOptions *kotsadmtypes.KotsadmOptions) *corev1.Pod {
+	podName := fmt.Sprintf("kotsadm-nfs-minio-check-%d", time.Now().Unix())
+	// TODO NOW move to .sh file?
+	command := `if [ ! -d /nfs/.minio.sys/config ]; then echo '{"hasMinioConfig": false}'; elif [ ! -f /nfs/.kots/minio-keys-sha.txt ]; then echo '{"hasMinioConfig": true}'; else SHA=$(cat /nfs/.kots/minio-keys-sha.txt); echo '{"hasMinioConfig": true, "minioKeysSHA":"'"$SHA"'"}'; fi`
+	return nfsMinioConfigPod(namespace, deployOptions, registryOptions, podName, command)
+}
+
+func nfsMinioResetPod(ctx context.Context, clientset kubernetes.Interface, namespace string, deployOptions NFSDeployOptions, registryOptions *kotsadmtypes.KotsadmOptions) *corev1.Pod {
+	podName := fmt.Sprintf("kotsadm-nfs-minio-reset-%d", time.Now().Unix())
+	command := `rm -rf /nfs/.minio.sys/config`
+	return nfsMinioConfigPod(namespace, deployOptions, registryOptions, podName, command)
+}
+
+func nfsMinioConfigPod(namespace string, deployOptions NFSDeployOptions, registryOptions *kotsadmtypes.KotsadmOptions, podName string, command string) *corev1.Pod {
 	var securityContext corev1.PodSecurityContext
 	if !deployOptions.IsOpenShift {
 		securityContext = corev1.PodSecurityContext{
@@ -643,7 +704,7 @@ func nfsMinioCheckPod(namespace string, deployOptions NFSDeployOptions, registry
 			Kind:       "Pod",
 		},
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
+			Name:      podName,
 			Namespace: namespace,
 		},
 		Spec: corev1.PodSpec{
@@ -669,8 +730,7 @@ func nfsMinioCheckPod(namespace string, deployOptions NFSDeployOptions, registry
 					Command: []string{
 						"/bin/sh",
 						"-c",
-						// TODO NOW
-						`if [ ! -d /nfs/.minio.sys/config ]; then echo '{"hasMinioConfig": false}'; elif [ ! -f /nfs/.kots/minio-keys-sha.txt ]; then echo '{"hasMinioConfig": true}'; else SHA=$(cat /nfs/.kots/minio-keys-sha.txt); echo '{"hasMinioConfig": true, "minioKeysSHA":"'"$SHA"'"}'; fi`,
+						command,
 					},
 					VolumeMounts: []corev1.VolumeMount{
 						{
