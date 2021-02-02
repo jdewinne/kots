@@ -1,9 +1,14 @@
 package snapshot
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"crypto/md5"
+	"crypto/sha256"
+	"encoding/json"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -16,6 +21,7 @@ import (
 	kotsadmtypes "github.com/replicatedhq/kots/pkg/kotsadm/types"
 	kotsadmversion "github.com/replicatedhq/kots/pkg/kotsadm/version"
 	"github.com/replicatedhq/kots/pkg/kotsutil"
+	"github.com/replicatedhq/kots/pkg/util"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	kuberneteserrors "k8s.io/apimachinery/pkg/api/errors"
@@ -35,6 +41,7 @@ const (
 )
 
 type NFSDeployOptions struct {
+	// TODO NOW: move namespace here?
 	IsOpenShift bool
 	NFSOptions  NFSOptions
 }
@@ -46,13 +53,19 @@ type NFSOptions struct {
 }
 
 func DeployNFSMinio(ctx context.Context, clientset kubernetes.Interface, namespace string, deployOptions NFSDeployOptions, registryOptions *kotsadmtypes.KotsadmOptions) error {
+	// TODO NOW: use this
+	_, err := shouldResetNFSMount(ctx, clientset, namespace, deployOptions, registryOptions)
+	if err != nil {
+		return errors.Wrap(err, "failed to check if should reset nfs mount")
+	}
+
+	// deploy resources
 	if err := ensurePV(ctx, clientset, namespace, deployOptions.NFSOptions); err != nil {
 		return errors.Wrap(err, "failed to ensure nfs minio pv")
 	}
 	if err := ensurePVC(ctx, clientset, namespace, deployOptions.NFSOptions); err != nil {
 		return errors.Wrap(err, "failed to ensure nfs minio pvc")
 	}
-
 	secret, err := ensureSecret(ctx, clientset, namespace)
 	if err != nil {
 		return errors.Wrap(err, "failed to ensure nfs minio secret")
@@ -61,7 +74,6 @@ func DeployNFSMinio(ctx context.Context, clientset kubernetes.Interface, namespa
 	if err != nil {
 		return errors.Wrap(err, "failed to marshal nfs minio secret")
 	}
-
 	if err := ensureDeployment(ctx, clientset, namespace, deployOptions, registryOptions, marshalledSecret); err != nil {
 		return errors.Wrap(err, "failed to ensure nfs minio deployment")
 	}
@@ -524,4 +536,215 @@ func CreateNFSBucket(ctx context.Context, clientset *kubernetes.Clientset, names
 	}
 
 	return nil
+}
+
+func shouldResetNFSMount(ctx context.Context, clientset kubernetes.Interface, namespace string, deployOptions NFSDeployOptions, registryOptions *kotsadmtypes.KotsadmOptions) (bool, error) {
+	checkPod, err := createNFSMinioCheckPod(ctx, clientset, namespace, deployOptions, registryOptions)
+	if err != nil {
+		return false, errors.Wrap(err, "failed to create nfs minio check pod")
+	}
+
+	if err := waitForPodCompleted(ctx, clientset, namespace, checkPod.Name, time.Minute*2); err != nil {
+		return false, errors.Wrap(err, "failed to wait for nfs minio check pod to complete")
+	}
+
+	defer func() {
+		// clean up
+		err := clientset.CoreV1().Pods(namespace).Delete(ctx, checkPod.Name, metav1.DeleteOptions{})
+		if err != nil {
+			// TODO NOW (log error)
+		}
+	}()
+
+	logs, err := getPodLogs(ctx, clientset, checkPod)
+	if err != nil {
+		return false, errors.Wrap(err, "failed to get nfs minio check pod logs")
+	}
+	if len(logs) == 0 {
+		return false, errors.New("no logs found")
+	}
+
+	type NFSMinioCheckPodOutput struct {
+		HasMinioConfig bool   `json:"hasMinioConfig"`
+		MinioKeysSHA   string `json:"minioKeysSHA"`
+	}
+
+	checkPodOutput := NFSMinioCheckPodOutput{}
+
+	scanner := bufio.NewScanner(bytes.NewReader(logs))
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		if err := json.Unmarshal([]byte(line), &checkPodOutput); err != nil {
+			continue
+		}
+
+		break
+	}
+
+	if !checkPodOutput.HasMinioConfig {
+		return false, nil
+	}
+
+	if checkPodOutput.MinioKeysSHA == "" {
+		return true, nil
+	}
+
+	minioSecret, err := clientset.CoreV1().Secrets(namespace).Get(ctx, NFSMinioSecretName, metav1.GetOptions{})
+	if err != nil {
+		if !kuberneteserrors.IsNotFound(err) {
+			return false, errors.Wrap(err, "failed to get existing minio secret")
+		}
+
+		return true, nil
+	}
+
+	newMinioKeysSHA := fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%s,%s", string(minioSecret.Data["MINIO_ACCESS_KEY"]), string(minioSecret.Data["MINIO_SECRET_KEY"])))))
+	if newMinioKeysSHA == checkPodOutput.MinioKeysSHA {
+		return false, nil
+	}
+
+	return true, nil
+}
+
+func createNFSMinioCheckPod(ctx context.Context, clientset kubernetes.Interface, namespace string, deployOptions NFSDeployOptions, registryOptions *kotsadmtypes.KotsadmOptions) (*corev1.Pod, error) {
+	pod := nfsMinioCheckPod(namespace, deployOptions, registryOptions)
+	p, err := clientset.CoreV1().Pods(namespace).Create(ctx, pod, metav1.CreateOptions{})
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to create pod")
+	}
+
+	return p, nil
+}
+
+func nfsMinioCheckPod(namespace string, deployOptions NFSDeployOptions, registryOptions *kotsadmtypes.KotsadmOptions) *corev1.Pod {
+	name := fmt.Sprintf("kotsadm-nfs-minio-check-%d", time.Now().Unix())
+
+	var securityContext corev1.PodSecurityContext
+	if !deployOptions.IsOpenShift {
+		securityContext = corev1.PodSecurityContext{
+			RunAsUser: util.IntPointer(1001),
+			FSGroup:   util.IntPointer(1001),
+		}
+	}
+
+	var pullSecrets []corev1.LocalObjectReference
+	if s := kotsadmversion.KotsadmPullSecret(namespace, *registryOptions); s != nil {
+		pullSecrets = []corev1.LocalObjectReference{
+			{
+				Name: s.ObjectMeta.Name,
+			},
+		}
+	}
+
+	pod := &corev1.Pod{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "v1",
+			Kind:       "Pod",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+		Spec: corev1.PodSpec{
+			SecurityContext:  &securityContext,
+			RestartPolicy:    corev1.RestartPolicyOnFailure,
+			ImagePullSecrets: pullSecrets,
+			Volumes: []corev1.Volume{
+				{
+					Name: "nfs",
+					VolumeSource: corev1.VolumeSource{
+						NFS: &corev1.NFSVolumeSource{
+							Path:   deployOptions.NFSOptions.Path,
+							Server: deployOptions.NFSOptions.Server,
+						},
+					},
+				},
+			},
+			Containers: []corev1.Container{
+				{
+					Image:           fmt.Sprintf("%s/kotsadm:%s", kotsadmversion.KotsadmRegistry(*registryOptions), kotsadmversion.KotsadmTag(*registryOptions)),
+					ImagePullPolicy: corev1.PullIfNotPresent,
+					Name:            "minio-check",
+					Command: []string{
+						"/bin/sh",
+						"-c",
+						// TODO NOW
+						`if [ ! -d /nfs/.minio.sys/config ]; then echo '{"hasMinioConfig": false}'; elif [ ! -f /nfs/.kots/minio-keys-sha.txt ]; then echo '{"hasMinioConfig": true}'; else SHA=$(cat /nfs/.kots/minio-keys-sha.txt); echo '{"hasMinioConfig": true, "minioKeysSHA":"'"$SHA"'"}'; fi`,
+					},
+					VolumeMounts: []corev1.VolumeMount{
+						{
+							Name:      "nfs",
+							MountPath: "/nfs",
+							ReadOnly:  true,
+						},
+					},
+					Resources: corev1.ResourceRequirements{
+						Limits: corev1.ResourceList{
+							"cpu":    resource.MustParse("100m"),
+							"memory": resource.MustParse("100Mi"),
+						},
+						Requests: corev1.ResourceList{
+							"cpu":    resource.MustParse("50m"),
+							"memory": resource.MustParse("50Mi"),
+						},
+					},
+				},
+			},
+		},
+	}
+
+	return pod
+}
+
+func waitForPodCompleted(ctx context.Context, clientset kubernetes.Interface, namespace string, podName string, timeoutWaitingForPod time.Duration) error {
+	start := time.Now()
+
+	for {
+		pod, err := clientset.CoreV1().Pods(namespace).Get(ctx, podName, metav1.GetOptions{})
+		if err != nil {
+			return errors.Wrap(err, "failed to list pods")
+		}
+
+		if pod.Status.Phase == corev1.PodSucceeded {
+			return nil
+		}
+
+		time.Sleep(time.Second)
+
+		if time.Now().Sub(start) > timeoutWaitingForPod {
+			return errors.New("timeout waiting for pod to complete")
+		}
+	}
+}
+
+func getPodLogs(ctx context.Context, clientset kubernetes.Interface, pod *corev1.Pod) ([]byte, error) {
+	podLogOpts := corev1.PodLogOptions{
+		Container: pod.Spec.Containers[0].Name,
+	}
+
+	req := clientset.CoreV1().Pods(pod.Namespace).GetLogs(pod.Name, &podLogOpts)
+	podLogs, err := req.Stream(ctx)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to get log stream")
+	}
+	defer podLogs.Close()
+
+	buf := new(bytes.Buffer)
+	errChan := make(chan error, 0)
+	go func() {
+		_, err := io.Copy(buf, podLogs)
+		errChan <- err
+	}()
+
+	select {
+	case resErr := <-errChan:
+		if resErr != nil {
+			return nil, errors.Wrap(resErr, "failed to copy logs")
+		} else {
+			return buf.Bytes(), nil
+		}
+	case <-ctx.Done():
+		return nil, errors.Wrap(ctx.Err(), "context ended copying logs")
+	}
 }

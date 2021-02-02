@@ -96,6 +96,7 @@ func BackupConfigureNFSCmd() *cobra.Command {
 			if veleroNamespace == "" {
 				log.FinishSpinner()
 				log.ActionWithoutSpinner("")
+				// TODO NOW: print info
 				log.Info("NFS configuration for the Admin Console is successful, but no Velero installation has been detected. Use the following information to set up Velero:\n\n")
 				log.Info("")
 				log.ActionWithoutSpinner("")
