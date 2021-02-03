@@ -205,7 +205,6 @@ func (h *Handler) UpdateGlobalSnapshotSettings(w http.ResponseWriter, r *http.Re
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
-
 		globalSnapshotSettingsResponse.NFSConfig = nfsConfig
 	}
 
@@ -262,7 +261,6 @@ func (h *Handler) GetGlobalSnapshotSettings(w http.ResponseWriter, r *http.Reque
 			JSON(w, http.StatusInternalServerError, globalSnapshotSettingsResponse)
 			return
 		}
-
 		globalSnapshotSettingsResponse.NFSConfig = nfsConfig
 	}
 
