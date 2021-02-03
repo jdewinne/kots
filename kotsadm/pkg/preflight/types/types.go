@@ -7,6 +7,6 @@ type PreflightResult struct {
 	CreatedAt    *time.Time `json:"createdAt"`
 	AppSlug      string     `json:"appSlug"`
 	ClusterSlug  string     `json:"clusterSlug"`
-	License      string     `json:"license"`
+	AppID        string     `json:"appId"`
 	InstallState string     `json:"installState"`
 }

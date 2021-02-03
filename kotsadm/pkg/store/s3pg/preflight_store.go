@@ -55,11 +55,11 @@ func (c S3PGStore) GetLatestPreflightResultsForSequenceZero() (*preflighttypes.P
 		app_downstream_version.preflight_result_created_at,
 		app.slug as app_slug,
 		cluster.slug as cluster_slug,
-		app.license as license,
+		app.id as app_id,
 		app.install_state as install_state
 	FROM app_downstream_version
 		INNER JOIN (
-			SELECT id, slug, license, install_state FROM app WHERE current_sequence = 0 ORDER BY created_at DESC LIMIT 1
+			SELECT id, slug, install_state FROM app WHERE current_sequence = 0 ORDER BY created_at DESC LIMIT 1
 		) AS app ON app_downstream_version.app_id = app.id
 		INNER JOIN cluster ON app_downstream_version.cluster_id = cluster.id
 	WHERE
@@ -109,7 +109,7 @@ func preflightResultFromRow(row scannable) (*preflighttypes.PreflightResult, err
 		&preflightResultCreatedAt,
 		&r.AppSlug,
 		&r.ClusterSlug,
-		&r.License,
+		&r.AppID,
 		&r.InstallState,
 	); err != nil {
 		return nil, errors.Wrap(err, "failed to scan")

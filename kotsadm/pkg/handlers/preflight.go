@@ -1,10 +1,12 @@
 package handlers
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 
@@ -59,8 +61,6 @@ func (h *Handler) GetPreflightResult(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) GetLatestPreflightResultsForSequenceZero(w http.ResponseWriter, r *http.Request) {
-	skipPreflights, _ := strconv.ParseBool(r.URL.Query().Get("skipPreflights"))
-
 	result, err := store.GetStore().GetLatestPreflightResultsForSequenceZero()
 	if err != nil {
 		logger.Error(err)
@@ -68,7 +68,26 @@ func (h *Handler) GetLatestPreflightResultsForSequenceZero(w http.ResponseWriter
 		return
 	}
 
-	fmt.Println("_____+++++______", skipPreflights, result)
+	skipPreflights, _ := strconv.ParseBool(r.URL.Query().Get("skipPreflights"))
+
+	if skipPreflights {
+		license, err := store.GetStore().GetLatestLicenseForApp(result.AppID)
+		if err != nil {
+			logger.Error(err)
+			w.WriteHeader(500)
+			return
+		}
+
+		req, err := sendPreflightsReportToReplicatedApp(license.Spec.LicenseID, result.AppSlug, skipPreflights, result.InstallState, false)
+		if err != nil {
+			fmt.Printf("%+v\n", err)
+			logger.Error(err)
+			w.WriteHeader(500)
+			return
+		}
+
+		fmt.Println("____--", req)
+	}
 
 	response := GetPreflightResultResponse{
 		PreflightResult: *result,
@@ -283,4 +302,40 @@ func (h *Handler) PostPreflightStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(204)
+}
+
+func sendPreflightsReportToReplicatedApp(licenseID string, appSlug string, skipPreflights bool, installStatus string, hasWarnOrErr bool) (bool, error) {
+	urlValues := url.Values{}
+
+	skipPreflightsToStr := fmt.Sprintf("%t", skipPreflights)
+	hasWarnOrErrToStr := fmt.Sprintf("%t", hasWarnOrErr)
+
+	urlValues.Set("skipPreflights", skipPreflightsToStr)
+	urlValues.Set("installStatus", installStatus)
+	urlValues.Set("hasWarnOrErr", hasWarnOrErrToStr)
+
+	url := fmt.Sprintf("http://replicated-app.default.svc.cluster.local:3000/preflights/reporting/%s?%s", appSlug, urlValues.Encode())
+
+	var buf bytes.Buffer
+	postReq, err := http.NewRequest("POST", url, &buf)
+	if err != nil {
+		return false, errors.Wrap(err, "failed to call newrequest")
+	}
+	postReq.Header.Add("Authorization", licenseID)
+	postReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(postReq)
+	if err != nil {
+		return false, errors.Wrap(err, "failed to check for updates")
+	}
+	defer resp.Body.Close()
+
+	b, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return false, errors.Wrap(err, "failed to read")
+	}
+
+	fmt.Printf("%s\n", b)
+
+	return false, nil
 }
