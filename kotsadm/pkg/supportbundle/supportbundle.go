@@ -448,6 +448,7 @@ func makeKotsadmCollectors() []*troubleshootv1beta2.Collect {
 		"kotsadm-operator",
 		"kurl-proxy-kotsadm",
 		"kotsadm-dex",
+		"kotsadm-nfs-minio",
 	}
 	kotsadmCollectors := []*troubleshootv1beta2.Collect{}
 	for _, name := range names {
