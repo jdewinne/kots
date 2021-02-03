@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"fmt"
 	"io/ioutil"
 	"net/http"
 	"os"
@@ -59,12 +60,15 @@ func (h *Handler) GetPreflightResult(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) GetLatestPreflightResultsForSequenceZero(w http.ResponseWriter, r *http.Request) {
 	skipPreflights, _ := strconv.ParseBool(r.URL.Query().Get("skipPreflights"))
+
 	result, err := store.GetStore().GetLatestPreflightResultsForSequenceZero()
 	if err != nil {
 		logger.Error(err)
 		w.WriteHeader(500)
 		return
 	}
+
+	fmt.Println("_____+++++______", skipPreflights, result)
 
 	response := GetPreflightResultResponse{
 		PreflightResult: *result,
