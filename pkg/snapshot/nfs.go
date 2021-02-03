@@ -31,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/utils/pointer"
+	"sigs.k8s.io/controller-runtime/pkg/client/config"
 	k8syaml "sigs.k8s.io/yaml"
 )
 
@@ -877,7 +878,17 @@ func CreateNFSBucket(ctx context.Context, clientset kubernetes.Interface, namesp
 	return nil
 }
 
-func GetCurrentNFSConfig(ctx context.Context, clientset kubernetes.Interface, namespace string) (*types.NFSConfig, error) {
+func GetCurrentNFSConfig(ctx context.Context, namespace string) (*types.NFSConfig, error) {
+	cfg, err := config.GetConfig()
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to get cluster config")
+	}
+
+	clientset, err := kubernetes.NewForConfig(cfg)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to create kubernetes clientset")
+	}
+
 	nfsConfigMap, err := clientset.CoreV1().ConfigMaps(namespace).Get(ctx, NFSMinioConfigMapName, metav1.GetOptions{})
 	if err != nil && !kuberneteserrors.IsNotFound(err) {
 		return nil, errors.Wrap(err, "failed to get nfs configmap")

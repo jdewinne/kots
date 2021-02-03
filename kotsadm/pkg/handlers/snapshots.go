@@ -11,7 +11,6 @@ import (
 
 	"github.com/gorilla/mux"
 	"github.com/pkg/errors"
-	"github.com/replicatedhq/kots/kotsadm/pkg/k8s"
 	"github.com/replicatedhq/kots/kotsadm/pkg/kurl"
 	"github.com/replicatedhq/kots/kotsadm/pkg/logger"
 	"github.com/replicatedhq/kots/kotsadm/pkg/snapshot"
@@ -199,15 +198,7 @@ func (h *Handler) UpdateGlobalSnapshotSettings(w http.ResponseWriter, r *http.Re
 	}
 
 	if updatedStore.NFS != nil {
-		clientset, err := k8s.Clientset()
-		if err != nil {
-			err = errors.Wrap(err, "failed to create kubernetes clientset")
-			logger.Error(err)
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-
-		nfsConfig, err := kotssnapshot.GetCurrentNFSConfig(r.Context(), clientset, os.Getenv("POD_NAMESPACE"))
+		nfsConfig, err := kotssnapshot.GetCurrentNFSConfig(r.Context(), os.Getenv("POD_NAMESPACE"))
 		if err != nil {
 			err = errors.Wrap(err, "failed to get nfs config")
 			logger.Error(err)
@@ -264,15 +255,7 @@ func (h *Handler) GetGlobalSnapshotSettings(w http.ResponseWriter, r *http.Reque
 	}
 
 	if store.NFS != nil {
-		clientset, err := k8s.Clientset()
-		if err != nil {
-			logger.Error(err)
-			globalSnapshotSettingsResponse.Error = "failed to create kubernetes clientset"
-			JSON(w, http.StatusInternalServerError, globalSnapshotSettingsResponse)
-			return
-		}
-
-		nfsConfig, err := kotssnapshot.GetCurrentNFSConfig(r.Context(), clientset, os.Getenv("POD_NAMESPACE"))
+		nfsConfig, err := kotssnapshot.GetCurrentNFSConfig(r.Context(), os.Getenv("POD_NAMESPACE"))
 		if err != nil {
 			logger.Error(err)
 			globalSnapshotSettingsResponse.Error = "failed to get nfs config"
