@@ -107,25 +107,23 @@ func BackupConfigureNFSCmd() *cobra.Command {
 				return errors.Wrap(err, "failed to create default bucket")
 			}
 
+			log.FinishSpinner()
+
 			veleroNamespace, err := snapshot.DetectVeleroNamespace()
 			if err != nil {
-				log.FinishSpinnerWithError()
 				return errors.Wrap(err, "failed to detect velero namespace")
 			}
 
 			if veleroNamespace == "" {
 				c, err := getNFSMinioVeleroConfig(clientset, namespace)
 				if err != nil {
-					log.FinishSpinnerWithError()
 					return errors.Wrap(err, "failed to get nfs minio velero config")
 				}
-				log.FinishSpinner()
 				log.ActionWithoutSpinner("NFS configuration for the Admin Console is successful, but no Velero installation has been detected.")
 				c.LogInfo(log)
 				return nil
 			}
 
-			log.FinishSpinner()
 			log.ActionWithSpinner("Configuring Velero")
 
 			_, err = snapshot.GetGlobalStore(nil)
@@ -140,6 +138,7 @@ func BackupConfigureNFSCmd() *cobra.Command {
 			}
 			_, err = snapshot.ConfigureStore(configureStoreOptions)
 			if err != nil {
+				log.FinishSpinnerWithError()
 				return errors.Wrap(err, "failed to configure store")
 			}
 
