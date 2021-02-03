@@ -17,6 +17,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"gopkg.in/ini.v1"
+	"k8s.io/client-go/kubernetes"
 )
 
 func BackupConfigureNFSCmd() *cobra.Command {
@@ -111,27 +112,15 @@ func BackupConfigureNFSCmd() *cobra.Command {
 			}
 
 			if veleroNamespace == "" {
-				nfsStore, err := snapshot.BuildNFSStore(clientset, namespace)
+				c, err := getNFSMinioVeleroConfig(clientset, namespace)
 				if err != nil {
 					log.FinishSpinnerWithError()
-					return errors.Wrap(err, "failed to build nfs store")
+					return errors.Wrap(err, "failed to get nfs minio velero config")
 				}
-
-				credsStr, err := formatCredentials(nfsStore.AccessKeyID, nfsStore.SecretAccessKey)
-				if err != nil {
-					log.FinishSpinnerWithError()
-					return errors.Wrap(err, "failed to format credentials")
-				}
-
-				publicURL := fmt.Sprintf("http://%s:%d", nfsStore.ObjectStoreClusterIP, snapshot.NFSMinioServicePort)
-				s3URL := nfsStore.Endpoint
-				veleroBlcFlag := fmt.Sprintf(`--backup-location-config region=%s,s3ForcePathStyle="true",s3Url=%s,publicUrl=%s`, snapshot.NFSMinioRegion, s3URL, publicURL)
-
-				// TODO NOW
 				log.FinishSpinner()
 				log.ActionWithoutSpinner("NFS configuration for the Admin Console is successful, but no Velero installation has been detected. Use the following information to set up Velero:\n")
-				log.Info("Credentials:\n%s", credsStr)
-				log.Info("Velero flags:\n%s", veleroBlcFlag)
+				log.Info("Credentials:\n\n%s", c.Credentials)
+				log.Info("Velero flags:\n\n%s", c.VeleroBlcFlag)
 				log.ActionWithoutSpinner("")
 				return nil
 			}
@@ -168,6 +157,32 @@ func BackupConfigureNFSCmd() *cobra.Command {
 	registryFlags(cmd.Flags())
 
 	return cmd
+}
+
+type NFSMinioVeleroConfig struct {
+	Credentials   string
+	VeleroBlcFlag string
+}
+
+func getNFSMinioVeleroConfig(clientset kubernetes.Interface, namespace string) (*NFSMinioVeleroConfig, error) {
+	nfsStore, err := snapshot.BuildNFSStore(clientset, namespace)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to build nfs store")
+	}
+
+	credsStr, err := formatCredentials(nfsStore.AccessKeyID, nfsStore.SecretAccessKey)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to format credentials")
+	}
+
+	publicURL := fmt.Sprintf("http://%s:%d", nfsStore.ObjectStoreClusterIP, snapshot.NFSMinioServicePort)
+	s3URL := nfsStore.Endpoint
+	veleroBlcFlag := fmt.Sprintf(`--backup-location-config region=%s,s3ForcePathStyle="true",s3Url=%s,publicUrl=%s`, snapshot.NFSMinioRegion, s3URL, publicURL)
+
+	return &NFSMinioVeleroConfig{
+		Credentials:   credsStr,
+		VeleroBlcFlag: veleroBlcFlag,
+	}, nil
 }
 
 func promptForNFSReset(nfsPath string) bool {
@@ -220,5 +235,5 @@ func formatCredentials(accessKeyID, secretAccessKey string) (string, error) {
 		return "", errors.Wrap(err, "failed to flush buffer")
 	}
 
-	return awsCredentials.String(), nil
+	return strings.TrimSpace(awsCredentials.String()), nil
 }
