@@ -21,6 +21,7 @@ import (
 	kotsadmtypes "github.com/replicatedhq/kots/pkg/kotsadm/types"
 	kotsadmversion "github.com/replicatedhq/kots/pkg/kotsadm/version"
 	"github.com/replicatedhq/kots/pkg/kotsutil"
+	types "github.com/replicatedhq/kots/pkg/snapshot/types"
 	"github.com/replicatedhq/kots/pkg/util"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -34,23 +35,17 @@ import (
 )
 
 const (
-	NFSMinioPVName, NFSMinioPVCName                                 = "kotsadm-nfs-minio", "kotsadm-nfs-minio"
-	NFSMinioSecretName, NFSMinioDeploymentName, NFSMinioServiceName = "kotsadm-nfs-minio-creds", "kotsadm-nfs-minio", "kotsadm-nfs-minio"
-	NFSMinioProvider, NFSMinioBucketName, NFSMinioRegion            = "aws", "velero", "minio"
-	NFSMinioServicePort                                             = 9000
+	NFSMinioConfigMapName, NFSMinioSecretName            = "kotsadm-nfs-minio", "kotsadm-nfs-minio-creds"
+	NFSMinioDeploymentName, NFSMinioServiceName          = "kotsadm-nfs-minio", "kotsadm-nfs-minio"
+	NFSMinioProvider, NFSMinioBucketName, NFSMinioRegion = "aws", "velero", "minio"
+	NFSMinioServicePort                                  = 9000
 )
 
 type NFSDeployOptions struct {
 	Namespace   string
 	IsOpenShift bool
 	ForceReset  bool
-	NFSOptions  NFSOptions
-}
-
-type NFSOptions struct {
-	Path    string
-	Server  string
-	Storage string
+	NFSConfig   types.NFSConfig
 }
 
 type ResetNFSError struct {
@@ -91,11 +86,9 @@ func DeployNFSMinio(ctx context.Context, clientset kubernetes.Interface, deployO
 	}
 
 	// deploy resources
-	if err := ensurePV(ctx, clientset, deployOptions); err != nil {
-		return errors.Wrap(err, "failed to ensure nfs minio pv")
-	}
-	if err := ensurePVC(ctx, clientset, deployOptions); err != nil {
-		return errors.Wrap(err, "failed to ensure nfs minio pvc")
+	err = ensureNFSConfigMap(ctx, clientset, deployOptions)
+	if err != nil {
+		return errors.Wrap(err, "failed to ensure nfs minio secret")
 	}
 	secret, err := ensureSecret(ctx, clientset, deployOptions.Namespace)
 	if err != nil {
@@ -114,102 +107,53 @@ func DeployNFSMinio(ctx context.Context, clientset kubernetes.Interface, deployO
 	return nil
 }
 
-func ensurePV(ctx context.Context, clientset kubernetes.Interface, deployOptions NFSDeployOptions) error {
-	pv := pvResource(deployOptions)
+func ensureNFSConfigMap(ctx context.Context, clientset kubernetes.Interface, deployOptions NFSDeployOptions) error {
+	configmap := configMapResource(deployOptions.NFSConfig)
 
-	_, err := clientset.CoreV1().PersistentVolumes().Get(ctx, pv.Name, metav1.GetOptions{})
+	existingConfigMap, err := clientset.CoreV1().ConfigMaps(deployOptions.Namespace).Get(ctx, configmap.Name, metav1.GetOptions{})
 	if err != nil {
 		if !kuberneteserrors.IsNotFound(err) {
-			return errors.Wrap(err, "failed to get existing pv")
+			return errors.Wrap(err, "failed to get existing configmap")
 		}
 
-		_, err = clientset.CoreV1().PersistentVolumes().Create(ctx, pv, metav1.CreateOptions{})
+		_, err := clientset.CoreV1().ConfigMaps(deployOptions.Namespace).Create(ctx, configmap, metav1.CreateOptions{})
 		if err != nil {
-			return errors.Wrap(err, "failed to create pv")
+			return errors.Wrap(err, "failed to create configmap")
 		}
 
 		return nil
 	}
 
-	// TODO NOW: no patch needed?
+	existingConfigMap = updateConfigMap(existingConfigMap, configmap)
 
-	return nil
-}
-
-func pvResource(deployOptions NFSDeployOptions) *corev1.PersistentVolume {
-	size := resource.MustParse("10Gi")
-	if deployOptions.NFSOptions.Storage != "" {
-		size = resource.MustParse(deployOptions.NFSOptions.Storage)
-	}
-
-	return &corev1.PersistentVolume{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: NFSMinioPVName,
-		},
-		Spec: corev1.PersistentVolumeSpec{
-			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
-			ClaimRef: &corev1.ObjectReference{
-				APIVersion: "v1",
-				Kind:       "PersistentVolumeClaim",
-				Name:       NFSMinioPVCName,
-				Namespace:  deployOptions.Namespace,
-			},
-			Capacity: corev1.ResourceList{
-				corev1.ResourceName(corev1.ResourceStorage): size,
-			},
-			PersistentVolumeSource: corev1.PersistentVolumeSource{
-				NFS: &corev1.NFSVolumeSource{
-					Path:   deployOptions.NFSOptions.Path,
-					Server: deployOptions.NFSOptions.Server,
-				},
-			},
-			PersistentVolumeReclaimPolicy: corev1.PersistentVolumeReclaimDelete,
-		},
-	}
-}
-
-func ensurePVC(ctx context.Context, clientset kubernetes.Interface, deployOptions NFSDeployOptions) error {
-	pvc := pvcResource(deployOptions)
-
-	_, err := clientset.CoreV1().PersistentVolumeClaims(deployOptions.Namespace).Get(ctx, pvc.Name, metav1.GetOptions{})
+	_, err = clientset.CoreV1().ConfigMaps(deployOptions.Namespace).Update(ctx, existingConfigMap, metav1.UpdateOptions{})
 	if err != nil {
-		if !kuberneteserrors.IsNotFound(err) {
-			return errors.Wrap(err, "failed to get existing pvc")
-		}
-
-		_, err = clientset.CoreV1().PersistentVolumeClaims(deployOptions.Namespace).Create(ctx, pvc, metav1.CreateOptions{})
-		if err != nil {
-			return errors.Wrap(err, "failed to create pvc")
-		}
-
-		return nil
+		return errors.Wrap(err, "failed to update deployment")
 	}
-
-	// TODO NOW: no patch needed?
 
 	return nil
 }
 
-func pvcResource(deployOptions NFSDeployOptions) *corev1.PersistentVolumeClaim {
-	size := resource.MustParse("10Gi")
-	if deployOptions.NFSOptions.Storage != "" {
-		size = resource.MustParse(deployOptions.NFSOptions.Storage)
-	}
-
-	return &corev1.PersistentVolumeClaim{
+func configMapResource(nfsConfig types.NFSConfig) *corev1.ConfigMap {
+	return &corev1.ConfigMap{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "v1",
+			Kind:       "Secret",
+		},
 		ObjectMeta: metav1.ObjectMeta{
-			Name: NFSMinioPVCName,
+			Name: NFSMinioConfigMapName,
 		},
-		Spec: corev1.PersistentVolumeClaimSpec{
-			VolumeName:  NFSMinioPVName,
-			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
-			Resources: corev1.ResourceRequirements{
-				Requests: corev1.ResourceList{
-					corev1.ResourceName(corev1.ResourceStorage): size,
-				},
-			},
+		Data: map[string]string{
+			"NFS_PATH":   nfsConfig.Path,
+			"NFS_SERVER": nfsConfig.Server,
 		},
 	}
+}
+
+func updateConfigMap(existingConfigMap, desiredConfigMap *corev1.ConfigMap) *corev1.ConfigMap {
+	existingConfigMap.Data = desiredConfigMap.Data
+
+	return existingConfigMap
 }
 
 func ensureSecret(ctx context.Context, clientset kubernetes.Interface, namespace string) (*corev1.Secret, error) {
@@ -407,8 +351,9 @@ func deploymentResource(clientset kubernetes.Interface, secretChecksum string, d
 						{
 							Name: "data",
 							VolumeSource: corev1.VolumeSource{
-								PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-									ClaimName: NFSMinioPVCName,
+								NFS: &corev1.NFSVolumeSource{
+									Path:   deployOptions.NFSConfig.Path,
+									Server: deployOptions.NFSConfig.Server,
 								},
 							},
 						},
@@ -785,8 +730,8 @@ func nfsMinioConfigPod(clientset kubernetes.Interface, deployOptions NFSDeployOp
 					Name: "nfs",
 					VolumeSource: corev1.VolumeSource{
 						NFS: &corev1.NFSVolumeSource{
-							Path:   deployOptions.NFSOptions.Path,
-							Server: deployOptions.NFSOptions.Server,
+							Path:   deployOptions.NFSConfig.Path,
+							Server: deployOptions.NFSConfig.Server,
 						},
 					},
 				},
@@ -930,4 +875,18 @@ func CreateNFSBucket(ctx context.Context, clientset kubernetes.Interface, namesp
 	}
 
 	return nil
+}
+
+func GetCurrentNFSConfig(ctx context.Context, clientset kubernetes.Interface, namespace string) (*types.NFSConfig, error) {
+	nfsConfigMap, err := clientset.CoreV1().ConfigMaps(namespace).Get(ctx, NFSMinioConfigMapName, metav1.GetOptions{})
+	if err != nil && !kuberneteserrors.IsNotFound(err) {
+		return nil, errors.Wrap(err, "failed to get nfs configmap")
+	}
+
+	nfsConfig := types.NFSConfig{
+		Path:   nfsConfigMap.Data["NFS_PATH"],
+		Server: nfsConfigMap.Data["NFS_SERVER"],
+	}
+
+	return &nfsConfig, nil
 }

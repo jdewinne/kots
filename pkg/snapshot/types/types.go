@@ -57,3 +57,8 @@ type Store struct {
 	Internal *StoreInternal `json:"internal,omitempty"`
 	NFS      *StoreNFS      `json:"nfs,omitempty"`
 }
+
+type NFSConfig struct {
+	Path   string `json:"path"`
+	Server string `json:"server"`
+}

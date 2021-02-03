@@ -11,6 +11,7 @@ import (
 
 	"github.com/gorilla/mux"
 	"github.com/pkg/errors"
+	"github.com/replicatedhq/kots/kotsadm/pkg/k8s"
 	"github.com/replicatedhq/kots/kotsadm/pkg/kurl"
 	"github.com/replicatedhq/kots/kotsadm/pkg/logger"
 	"github.com/replicatedhq/kots/kotsadm/pkg/snapshot"
@@ -34,9 +35,11 @@ type GlobalSnapshotSettingsResponse struct {
 	IsResticRunning bool     `json:"isResticRunning"`
 	IsKurl          bool     `json:"isKurl"`
 
-	Store   *kotssnapshottypes.Store `json:"store,omitempty"`
-	Success bool                     `json:"success"`
-	Error   string                   `json:"error,omitempty"`
+	Store     *kotssnapshottypes.Store     `json:"store,omitempty"`
+	NFSConfig *kotssnapshottypes.NFSConfig `json:"nfsConfig,omitempty"`
+
+	Success bool   `json:"success"`
+	Error   string `json:"error,omitempty"`
 }
 
 type UpdateGlobalSnapshotSettingsRequest struct {
@@ -55,7 +58,7 @@ type UpdateGlobalSnapshotSettingsRequest struct {
 type NFSOptions struct {
 	Path       string `json:"path"`
 	Server     string `json:"server"`
-	ForceReset bool   `json:"forceReset"`
+	ForceReset bool   `json:"forceReset,omitempty"`
 }
 
 type SnapshotConfig struct {
@@ -132,10 +135,9 @@ func (h *Handler) UpdateGlobalSnapshotSettings(w http.ResponseWriter, r *http.Re
 			Namespace:   namespace,
 			IsOpenShift: k8sutil.IsOpenShift(clientset),
 			ForceReset:  updateGlobalSnapshotSettingsRequest.NFS.ForceReset,
-			NFSOptions: kotssnapshot.NFSOptions{
+			NFSConfig: kotssnapshottypes.NFSConfig{
 				Path:   updateGlobalSnapshotSettingsRequest.NFS.Path,
 				Server: updateGlobalSnapshotSettingsRequest.NFS.Server,
-				// TODO NOW storage
 			},
 		}
 		if err := kotssnapshot.DeployNFSMinio(r.Context(), clientset, deployOptions, registryOptions); err != nil {
@@ -196,10 +198,30 @@ func (h *Handler) UpdateGlobalSnapshotSettings(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	if updatedStore.NFS != nil {
+		clientset, err := k8s.Clientset()
+		if err != nil {
+			err = errors.Wrap(err, "failed to create kubernetes clientset")
+			logger.Error(err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		nfsConfig, err := kotssnapshot.GetCurrentNFSConfig(r.Context(), clientset, os.Getenv("POD_NAMESPACE"))
+		if err != nil {
+			err = errors.Wrap(err, "failed to get nfs config")
+			logger.Error(err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		globalSnapshotSettingsResponse.NFSConfig = nfsConfig
+	}
+
 	globalSnapshotSettingsResponse.Store = updatedStore
 	globalSnapshotSettingsResponse.Success = true
 
-	JSON(w, 200, globalSnapshotSettingsResponse)
+	JSON(w, http.StatusOK, globalSnapshotSettingsResponse)
 }
 
 func (h *Handler) GetGlobalSnapshotSettings(w http.ResponseWriter, r *http.Request) {
@@ -211,11 +233,11 @@ func (h *Handler) GetGlobalSnapshotSettings(w http.ResponseWriter, r *http.Reque
 	if err != nil {
 		logger.Error(err)
 		globalSnapshotSettingsResponse.Error = "failed to detect velero"
-		JSON(w, 500, globalSnapshotSettingsResponse)
+		JSON(w, http.StatusInternalServerError, globalSnapshotSettingsResponse)
 		return
 	}
 	if veleroStatus == nil {
-		JSON(w, 200, globalSnapshotSettingsResponse)
+		JSON(w, http.StatusOK, globalSnapshotSettingsResponse)
 		return
 	}
 
@@ -230,21 +252,41 @@ func (h *Handler) GetGlobalSnapshotSettings(w http.ResponseWriter, r *http.Reque
 	if err != nil {
 		logger.Error(err)
 		globalSnapshotSettingsResponse.Error = "failed to get store"
-		JSON(w, 500, globalSnapshotSettingsResponse)
+		JSON(w, http.StatusInternalServerError, globalSnapshotSettingsResponse)
 		return
 	}
 
 	if err := kotssnapshot.Redact(store); err != nil {
 		logger.Error(err)
 		globalSnapshotSettingsResponse.Error = "failed to redact"
-		JSON(w, 500, globalSnapshotSettingsResponse)
+		JSON(w, http.StatusInternalServerError, globalSnapshotSettingsResponse)
 		return
+	}
+
+	if store.NFS != nil {
+		clientset, err := k8s.Clientset()
+		if err != nil {
+			logger.Error(err)
+			globalSnapshotSettingsResponse.Error = "failed to create kubernetes clientset"
+			JSON(w, http.StatusInternalServerError, globalSnapshotSettingsResponse)
+			return
+		}
+
+		nfsConfig, err := kotssnapshot.GetCurrentNFSConfig(r.Context(), clientset, os.Getenv("POD_NAMESPACE"))
+		if err != nil {
+			logger.Error(err)
+			globalSnapshotSettingsResponse.Error = "failed to get nfs config"
+			JSON(w, http.StatusInternalServerError, globalSnapshotSettingsResponse)
+			return
+		}
+
+		globalSnapshotSettingsResponse.NFSConfig = nfsConfig
 	}
 
 	globalSnapshotSettingsResponse.Store = store
 	globalSnapshotSettingsResponse.Success = true
 
-	JSON(w, 200, globalSnapshotSettingsResponse)
+	JSON(w, http.StatusOK, globalSnapshotSettingsResponse)
 }
 
 func (h *Handler) GetSnapshotConfig(w http.ResponseWriter, r *http.Request) {

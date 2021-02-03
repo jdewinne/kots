@@ -13,6 +13,7 @@ import (
 	"github.com/replicatedhq/kots/pkg/k8sutil"
 	"github.com/replicatedhq/kots/pkg/logger"
 	"github.com/replicatedhq/kots/pkg/snapshot"
+	"github.com/replicatedhq/kots/pkg/snapshot/types"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"gopkg.in/ini.v1"
@@ -62,10 +63,9 @@ func BackupConfigureNFSCmd() *cobra.Command {
 			deployOptions := snapshot.NFSDeployOptions{
 				Namespace:   namespace,
 				IsOpenShift: k8sutil.IsOpenShift(clientset),
-				NFSOptions: snapshot.NFSOptions{
-					Path:    nfsPath,
-					Server:  nfsServer,
-					Storage: v.GetString("storage"),
+				NFSConfig: types.NFSConfig{
+					Path:   nfsPath,
+					Server: nfsServer,
 				},
 			}
 			if err := snapshot.DeployNFSMinio(cmd.Context(), clientset, deployOptions, *registryOptions); err != nil {
@@ -162,7 +162,6 @@ func BackupConfigureNFSCmd() *cobra.Command {
 
 	cmd.Flags().String("path", "", "path that is exported by the NFS server")
 	cmd.Flags().String("server", "", "the hostname or IP address of the NFS server")
-	cmd.Flags().String("storage", "10Gi", "the storage capacity to be request")
 	cmd.Flags().StringP("namespace", "n", "", "the namespace in which kots/kotsadm is installed")
 	cmd.Flags().Bool("airgap", false, "set to true to run in airgapped mode.")
 

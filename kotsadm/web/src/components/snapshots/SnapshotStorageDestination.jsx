@@ -94,8 +94,8 @@ class SnapshotStorageDestination extends Component {
     s3CompatibleEndpoint: "",
     s3CompatibleRegion: "",
 
-    nfsPath: "/mnt/nfs_share", // TODO NOW
-    nfsServer: "10.128.0.32", // TODO NOW
+    nfsPath: "",
+    nfsServer: "",
   };
 
   componentDidMount() {
@@ -159,7 +159,6 @@ class SnapshotStorageDestination extends Component {
         snapshotSettings?.store?.other?.secretAccessKey !== s3CompatibleKeySecret || snapshotSettings?.store?.other?.endpoint !== s3CompatibleEndpoint
       )
     }
-    // TODO NOW check nfs and remove this return statement
   }
 
   getCurrentProviderStores = (provider) => {
@@ -212,7 +211,6 @@ class SnapshotStorageDestination extends Component {
     const { snapshotSettings } = this.props;
     if (!snapshotSettings) return;
     const { store } = snapshotSettings;
-
 
     if (store?.aws) {
       return this.setState({
@@ -276,10 +274,12 @@ class SnapshotStorageDestination extends Component {
     }
 
     if (store?.nfs) {
+      const { nfsConfig } = snapshotSettings;
       return this.setState({
         determiningDestination: false,
         selectedDestination: find(DESTINATIONS, ["value", "nfs"]),
-        // TODO NOW set nfsPath and nfsServer
+        nfsPath: nfsConfig?.path,
+        nfsServer: nfsConfig?.server,
       });
     }
 
