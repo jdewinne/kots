@@ -65,14 +65,14 @@ func DeployNFSMinio(ctx context.Context, clientset kubernetes.Interface, deployO
 	}
 	if shouldReset {
 		if !deployOptions.ForceReset {
-			return &ResetNFSError{Message: "nfs mount is already configured with a different minio instance"}
+			return &ResetNFSError{Message: getNFSResetWarningMsg(deployOptions.NFSConfig.Path)}
 		}
 		err := resetNFSMount(ctx, clientset, deployOptions, registryOptions)
 		if err != nil {
 			return errors.Wrap(err, "failed to reset nfs mount")
 		}
 	}
-	if !hasMinioConfig {
+	if shouldReset || !hasMinioConfig {
 		err := scaleDownNFSMinio(ctx, clientset, deployOptions.Namespace)
 		if err != nil {
 			return errors.Wrap(err, "failed to scale down nfs minio")
@@ -824,7 +824,7 @@ func getPodLogs(ctx context.Context, clientset kubernetes.Interface, pod *corev1
 	}
 }
 
-func GetNFSResetWarningMsg(nfsPath string) string {
+func getNFSResetWarningMsg(nfsPath string) string {
 	return fmt.Sprintf("The %s directory was previously configured by a different minio instance.\nProceeding will re-configure it to be used only by this new minio instance, and any other minio instance using this location will no longer have access.\nIf you are attempting to fully restore a prior installation, such as a disaster recovery scenario, this action is expected.", nfsPath)
 }
 

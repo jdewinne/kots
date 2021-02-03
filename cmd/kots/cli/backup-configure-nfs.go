@@ -72,9 +72,9 @@ func BackupConfigureNFSCmd() *cobra.Command {
 				},
 			}
 			if err := snapshot.DeployNFSMinio(cmd.Context(), clientset, deployOptions, *registryOptions); err != nil {
-				if _, ok := err.(*snapshot.ResetNFSError); ok {
+				if _, ok := errors.Cause(err).(*snapshot.ResetNFSError); ok {
 					log.FinishSpinnerWithError()
-					forceReset := promptForNFSReset(log, nfsPath)
+					forceReset := promptForNFSReset(log, err.Error())
 					if forceReset {
 						log.ActionWithSpinner("Re-configuring NFS Minio")
 						deployOptions.ForceReset = true
@@ -191,9 +191,7 @@ func getNFSMinioVeleroConfig(clientset kubernetes.Interface, namespace string) (
 	}, nil
 }
 
-func promptForNFSReset(log *logger.Logger, nfsPath string) bool {
-	warningMsg := snapshot.GetNFSResetWarningMsg(nfsPath)
-
+func promptForNFSReset(log *logger.Logger, warningMsg string) bool {
 	// this is a workaround to avoid this issue: https://github.com/manifoldco/promptui/issues/122
 	red := color.New(color.BgRed)
 	log.ColoredInfo(fmt.Sprintf("\n%s", warningMsg), red)

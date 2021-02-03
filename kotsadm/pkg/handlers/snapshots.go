@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -25,6 +26,21 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/controller-runtime/pkg/client/config"
 )
+
+type ConfigureNFSSnapshotsBackendResponse struct {
+	Success bool   `json:"success"`
+	Error   string `json:"error,omitempty"`
+}
+
+type ConfigureNFSSnapshotsBackendRequest struct {
+	NFSOptions NFSOptions `json:"nfsOptions"`
+}
+
+type NFSOptions struct {
+	Path       string `json:"path"`
+	Server     string `json:"server"`
+	ForceReset bool   `json:"forceReset,omitempty"`
+}
 
 type GlobalSnapshotSettingsResponse struct {
 	VeleroVersion   string   `json:"veleroVersion"`
@@ -54,12 +70,6 @@ type UpdateGlobalSnapshotSettingsRequest struct {
 	NFS      *NFSOptions                    `json:"nfs"`
 }
 
-type NFSOptions struct {
-	Path       string `json:"path"`
-	Server     string `json:"server"`
-	ForceReset bool   `json:"forceReset,omitempty"`
-}
-
 type SnapshotConfig struct {
 	AutoEnabled  bool                            `json:"autoEnabled"`
 	AutoSchedule *snapshottypes.SnapshotSchedule `json:"autoSchedule"`
@@ -68,6 +78,81 @@ type SnapshotConfig struct {
 
 type VeleroStatus struct {
 	IsVeleroInstalled bool `json:"isVeleroInstalled"`
+}
+
+func (h *Handler) ConfigureNFSSnapshotsBackend(w http.ResponseWriter, r *http.Request) {
+	response := ConfigureNFSSnapshotsBackendResponse{
+		Success: false,
+	}
+
+	request := ConfigureNFSSnapshotsBackendRequest{}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		errMsg := "failed to decode request body"
+		logger.Error(errors.Wrap(err, errMsg))
+		response.Error = errMsg
+		JSON(w, http.StatusBadRequest, response)
+		return
+	}
+
+	if err := configureNFSSnapshotsBackend(r.Context(), &request.NFSOptions); err != nil {
+		if _, ok := errors.Cause(err).(*kotssnapshot.ResetNFSError); ok {
+			response.Error = err.Error()
+			JSON(w, http.StatusConflict, response)
+			return
+		}
+		err = errors.Wrap(err, "failed to configure nfs snapshots backend")
+		logger.Error(err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	response.Success = true
+
+	JSON(w, http.StatusOK, response)
+}
+
+func configureNFSSnapshotsBackend(ctx context.Context, opts *NFSOptions) error {
+	namespace := os.Getenv("POD_NAMESPACE")
+
+	cfg, err := config.GetConfig()
+	if err != nil {
+		return errors.Wrap(err, "failed to get cluster config")
+	}
+
+	clientset, err := kubernetes.NewForConfig(cfg)
+	if err != nil {
+		return errors.Wrap(err, "failed to create kubernetes clientset")
+	}
+
+	registryOptions, err := kotsadm.GetKotsadmOptionsFromCluster(namespace, clientset)
+	if err != nil {
+		return errors.Wrap(err, "failed to get kotsadm options from cluster")
+	}
+
+	deployOptions := kotssnapshot.NFSDeployOptions{
+		Namespace:   namespace,
+		IsOpenShift: k8sutil.IsOpenShift(clientset),
+		ForceReset:  opts.ForceReset,
+		NFSConfig: kotssnapshottypes.NFSConfig{
+			Path:   opts.Path,
+			Server: opts.Server,
+		},
+	}
+	if err := kotssnapshot.DeployNFSMinio(ctx, clientset, deployOptions, registryOptions); err != nil {
+		return err
+	}
+
+	err = kotssnapshot.WaitForNFSMinioReady(ctx, clientset, namespace, time.Minute*5)
+	if err != nil {
+		return errors.Wrap(err, "failed to wait for nfs minio")
+	}
+
+	err = kotssnapshot.CreateNFSBucket(ctx, clientset, namespace)
+	if err != nil {
+		return errors.Wrap(err, "failed to create default bucket")
+	}
+
+	return nil
 }
 
 func (h *Handler) UpdateGlobalSnapshotSettings(w http.ResponseWriter, r *http.Request) {
@@ -103,66 +188,15 @@ func (h *Handler) UpdateGlobalSnapshotSettings(w http.ResponseWriter, r *http.Re
 	globalSnapshotSettingsResponse.IsKurl = kurl.IsKurl()
 
 	if updateGlobalSnapshotSettingsRequest.NFS != nil {
-		// make sure NFS Minio is configured and deployed first
-		namespace := os.Getenv("POD_NAMESPACE")
-
-		cfg, err := config.GetConfig()
+		// make sure NFS backend is configured and deployed first
+		err := configureNFSSnapshotsBackend(r.Context(), updateGlobalSnapshotSettingsRequest.NFS)
 		if err != nil {
-			err = errors.Wrap(err, "failed to get cluster config")
-			logger.Error(err)
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-
-		clientset, err := kubernetes.NewForConfig(cfg)
-		if err != nil {
-			err = errors.Wrap(err, "failed to create kubernetes clientset")
-			logger.Error(err)
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-
-		registryOptions, err := kotsadm.GetKotsadmOptionsFromCluster(namespace, clientset)
-		if err != nil {
-			err = errors.Wrap(err, "failed to get kotsadm options from cluster")
-			logger.Error(err)
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-
-		deployOptions := kotssnapshot.NFSDeployOptions{
-			Namespace:   namespace,
-			IsOpenShift: k8sutil.IsOpenShift(clientset),
-			ForceReset:  updateGlobalSnapshotSettingsRequest.NFS.ForceReset,
-			NFSConfig: kotssnapshottypes.NFSConfig{
-				Path:   updateGlobalSnapshotSettingsRequest.NFS.Path,
-				Server: updateGlobalSnapshotSettingsRequest.NFS.Server,
-			},
-		}
-		if err := kotssnapshot.DeployNFSMinio(r.Context(), clientset, deployOptions, registryOptions); err != nil {
-			if _, ok := err.(*kotssnapshot.ResetNFSError); ok {
-				errMsg := kotssnapshot.GetNFSResetWarningMsg(updateGlobalSnapshotSettingsRequest.NFS.Path)
-				err = errors.New(errMsg)
-				JSON(w, http.StatusConflict, NewErrorResponse(err))
+			if _, ok := errors.Cause(err).(*kotssnapshot.ResetNFSError); ok {
+				globalSnapshotSettingsResponse.Error = err.Error()
+				JSON(w, http.StatusConflict, globalSnapshotSettingsResponse)
 				return
 			}
-			err = errors.Wrap(err, "failed to deploy nfs minio")
-			logger.Error(err)
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-
-		err = kotssnapshot.WaitForNFSMinioReady(r.Context(), clientset, namespace, time.Minute*5)
-		if err != nil {
-			err = errors.Wrap(err, "failed to wait for nfs minio")
-			logger.Error(err)
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-
-		err = kotssnapshot.CreateNFSBucket(r.Context(), clientset, namespace)
-		if err != nil {
-			err = errors.Wrap(err, "failed to create default bucket")
+			err = errors.Wrap(err, "failed to configure nfs snapshots backend")
 			logger.Error(err)
 			w.WriteHeader(http.StatusInternalServerError)
 			return
