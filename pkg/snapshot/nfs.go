@@ -825,7 +825,7 @@ func getPodLogs(ctx context.Context, clientset kubernetes.Interface, pod *corev1
 }
 
 func GetNFSResetWarningMsg(nfsPath string) string {
-	return fmt.Sprintf("The %s directory was previously configured by a different minio instance. Proceeding will re-configure it to be used only by this new minio instance, and any other minio instance using this location will no longer have access. If you are attempting to fully restore a prior installation, such as a disaster recovery scenario, this action is expected. Would you like to continue? [y/N]", nfsPath)
+	return fmt.Sprintf("The %s directory was previously configured by a different minio instance.\nProceeding will re-configure it to be used only by this new minio instance, and any other minio instance using this location will no longer have access.\nIf you are attempting to fully restore a prior installation, such as a disaster recovery scenario, this action is expected.", nfsPath)
 }
 
 func CreateNFSBucket(ctx context.Context, clientset kubernetes.Interface, namespace string) error {

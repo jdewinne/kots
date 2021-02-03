@@ -795,7 +795,7 @@ class SnapshotStorageDestination extends Component {
             className="Modal MediumSize"
           >
             <div className="Modal-body">
-              <p className="u-fontSize--large u-color--chestnut u-marginBottom--20">{this.props.resetNFSWarningMessage}</p>
+              <p className="u-fontSize--large u-color--chestnut u-marginBottom--20">{this.props.resetNFSWarningMessage} Would you like to continue?</p>
               <div className="u-marginTop--10 flex justifyContent--flexEnd">
                 <button type="button" className="btn secondary" onClick={this.props.hideResetNFSWarningModal}>No</button>
                 <button type="button" className="btn blue primary u-marginLeft--10" onClick={this.forceSnapshotProviderNFS}>Yes</button>

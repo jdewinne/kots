@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/fatih/color"
+
 	"github.com/manifoldco/promptui"
 	"github.com/pkg/errors"
 	"github.com/replicatedhq/kots/pkg/k8sutil"
@@ -72,7 +74,7 @@ func BackupConfigureNFSCmd() *cobra.Command {
 			if err := snapshot.DeployNFSMinio(cmd.Context(), clientset, deployOptions, *registryOptions); err != nil {
 				if _, ok := err.(*snapshot.ResetNFSError); ok {
 					log.FinishSpinner()
-					forceReset := promptForNFSReset(nfsPath)
+					forceReset := promptForNFSReset(log, nfsPath)
 					if forceReset {
 						log.ActionWithSpinner("Re-configuring NFS Minio")
 						deployOptions.ForceReset = true
@@ -118,10 +120,8 @@ func BackupConfigureNFSCmd() *cobra.Command {
 					return errors.Wrap(err, "failed to get nfs minio velero config")
 				}
 				log.FinishSpinner()
-				log.ActionWithoutSpinner("NFS configuration for the Admin Console is successful, but no Velero installation has been detected. Use the following information to set up Velero:\n")
-				log.Info("Credentials:\n\n%s", c.Credentials)
-				log.Info("Velero flags:\n\n%s", c.VeleroBlcFlag)
-				log.ActionWithoutSpinner("")
+				log.ActionWithoutSpinner("NFS configuration for the Admin Console is successful, but no Velero installation has been detected.")
+				c.LogInfo(log)
 				return nil
 			}
 
@@ -160,8 +160,15 @@ func BackupConfigureNFSCmd() *cobra.Command {
 }
 
 type NFSMinioVeleroConfig struct {
-	Credentials   string
-	VeleroBlcFlag string
+	Credentials string
+	VeleroFlags string
+}
+
+func (c *NFSMinioVeleroConfig) LogInfo(log *logger.Logger) {
+	log.ActionWithoutSpinner("Use the following information to set up Velero:\n")
+	log.Info("[1] Save the following credentials in a file:\n\n%s", c.Credentials)
+	log.Info("[2] Pass the following flags to the velero install command:\n\n%s", c.VeleroFlags)
+	log.ActionWithoutSpinner("")
 }
 
 func getNFSMinioVeleroConfig(clientset kubernetes.Interface, namespace string) (*NFSMinioVeleroConfig, error) {
@@ -177,25 +184,27 @@ func getNFSMinioVeleroConfig(clientset kubernetes.Interface, namespace string) (
 
 	publicURL := fmt.Sprintf("http://%s:%d", nfsStore.ObjectStoreClusterIP, snapshot.NFSMinioServicePort)
 	s3URL := nfsStore.Endpoint
-	veleroBlcFlag := fmt.Sprintf(`--backup-location-config region=%s,s3ForcePathStyle="true",s3Url=%s,publicUrl=%s`, snapshot.NFSMinioRegion, s3URL, publicURL)
+	veleroFlags := fmt.Sprintf("--bucket velero \\\n--secret-file /path/to/credentials \\\n--backup-location-config region=%s,s3ForcePathStyle=\"true\",s3Url=%s,publicUrl=%s", snapshot.NFSMinioRegion, s3URL, publicURL)
 
 	return &NFSMinioVeleroConfig{
-		Credentials:   credsStr,
-		VeleroBlcFlag: veleroBlcFlag,
+		Credentials: credsStr,
+		VeleroFlags: veleroFlags,
 	}, nil
 }
 
-func promptForNFSReset(nfsPath string) bool {
-	// TODO NOW: new lines
-	label := snapshot.GetNFSResetWarningMsg(nfsPath)
+func promptForNFSReset(log *logger.Logger, nfsPath string) bool {
+	warningMsg := snapshot.GetNFSResetWarningMsg(nfsPath)
+
+	// this is a workaround to avoid this issue: https://github.com/manifoldco/promptui/issues/122
+	red := color.New(color.BgRed)
+	log.ColoredInfo(fmt.Sprintf("\n%s", warningMsg), red)
 
 	prompt := promptui.Prompt{
-		Label:     label,
+		Label:     "Would you like to continue",
 		IsConfirm: true,
 	}
 
 	for {
-		// TODO NOW: don't print msg on each key stroke
 		resp, err := prompt.Run()
 		if err == promptui.ErrInterrupt {
 			os.Exit(-1)
@@ -204,6 +213,7 @@ func promptForNFSReset(nfsPath string) bool {
 			os.Exit(-1)
 		}
 		if strings.ToLower(resp) == "y" {
+			log.ActionWithoutSpinner("")
 			return true
 		}
 	}

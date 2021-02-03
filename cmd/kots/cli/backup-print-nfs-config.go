@@ -37,10 +37,7 @@ func BackupPrintNFSConfigCmd() *cobra.Command {
 			}
 
 			log := logger.NewLogger()
-			log.ActionWithoutSpinner("Use the following information to set up Velero:\n")
-			log.Info("Credentials:\n\n%s", c.Credentials)
-			log.Info("Velero flags:\n\n%s", c.VeleroBlcFlag)
-			log.ActionWithoutSpinner("")
+			c.LogInfo(log)
 
 			return nil
 		},
