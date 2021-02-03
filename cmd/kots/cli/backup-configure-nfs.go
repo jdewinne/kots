@@ -73,7 +73,7 @@ func BackupConfigureNFSCmd() *cobra.Command {
 			}
 			if err := snapshot.DeployNFSMinio(cmd.Context(), clientset, deployOptions, *registryOptions); err != nil {
 				if _, ok := err.(*snapshot.ResetNFSError); ok {
-					log.FinishSpinner()
+					log.FinishSpinnerWithError()
 					forceReset := promptForNFSReset(log, nfsPath)
 					if forceReset {
 						log.ActionWithSpinner("Re-configuring NFS Minio")
