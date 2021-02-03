@@ -17,7 +17,7 @@ class PreflightResultPage extends Component {
     showWarningModal: false,
     getKotsPreflightResultJob: new Repeater(),
     preflightResultData: null,
-    errorMessage: "",
+    errorMessage: ""
   };
 
   componentDidMount() {
@@ -184,13 +184,14 @@ class PreflightResultPage extends Component {
   }
 
   getKotsPreflightResult = async () => {
+    const { showSkipModal } = this.state;
     this.setState({ errorMessage: "" });
     const { match } = this.props;
     if (match.params.downstreamSlug) { // why?
       const sequence = match.params.sequence ? parseInt(match.params.sequence, 10) : 0;
       return this.getKotsPreflightResultForSequence(match.params.slug, sequence);
     }
-    return this.getLatestKotsPreflightResult();
+    return this.getLatestKotsPreflightResult(showSkipModal);
   }
 
   getKotsPreflightResultForSequence = async (slug, sequence) => {
@@ -223,11 +224,11 @@ class PreflightResultPage extends Component {
     }
   }
 
-  getLatestKotsPreflightResult = async () => {
+  getLatestKotsPreflightResult = async (isSkipPreflights) => {
     const { slug } = this.props.match.params;
 
     try {
-      const res = await fetch(`${window.env.API_ENDPOINT}/app/${slug}/preflight/result`, {
+      const res = await fetch(`${window.env.API_ENDPOINT}/app/${slug}/preflight/result?skipPreflights=${isSkipPreflights}`, {
         method: "GET",
         headers: {
           "Authorization": Utilities.getToken(),
