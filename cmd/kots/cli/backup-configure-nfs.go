@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"bufio"
+	"bytes"
 	"fmt"
 	"os"
 	"strings"
@@ -13,6 +15,7 @@ import (
 	"github.com/replicatedhq/kots/pkg/snapshot"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
+	"gopkg.in/ini.v1"
 )
 
 func BackupConfigureNFSCmd() *cobra.Command {
@@ -108,11 +111,27 @@ func BackupConfigureNFSCmd() *cobra.Command {
 			}
 
 			if veleroNamespace == "" {
+				nfsStore, err := snapshot.BuildNFSStore(clientset, namespace)
+				if err != nil {
+					log.FinishSpinnerWithError()
+					return errors.Wrap(err, "failed to build nfs store")
+				}
+
+				credsStr, err := formatCredentials(nfsStore.AccessKeyID, nfsStore.SecretAccessKey)
+				if err != nil {
+					log.FinishSpinnerWithError()
+					return errors.Wrap(err, "failed to format credentials")
+				}
+
+				publicURL := fmt.Sprintf("http://%s:%d", nfsStore.ObjectStoreClusterIP, snapshot.NFSMinioServicePort)
+				s3URL := nfsStore.Endpoint
+				veleroBlcFlag := fmt.Sprintf(`--backup-location-config region=%s,s3ForcePathStyle="true",s3Url=%s,publicUrl=%s`, snapshot.NFSMinioRegion, s3URL, publicURL)
+
+				// TODO NOW
 				log.FinishSpinner()
-				log.ActionWithoutSpinner("")
-				// TODO NOW: print info
-				log.Info("NFS configuration for the Admin Console is successful, but no Velero installation has been detected. Use the following information to set up Velero:\n\n")
-				log.Info("")
+				log.ActionWithoutSpinner("NFS configuration for the Admin Console is successful, but no Velero installation has been detected. Use the following information to set up Velero:\n")
+				log.Info("Credentials:\n%s", credsStr)
+				log.Info("Velero flags:\n%s", veleroBlcFlag)
 				log.ActionWithoutSpinner("")
 				return nil
 			}
@@ -174,4 +193,33 @@ func promptForNFSReset(nfsPath string) bool {
 			return true
 		}
 	}
+}
+
+func formatCredentials(accessKeyID, secretAccessKey string) (string, error) {
+	awsCfg := ini.Empty()
+	section, err := awsCfg.NewSection("default")
+	if err != nil {
+		return "", errors.Wrap(err, "failed to create default section in aws creds")
+	}
+	_, err = section.NewKey("aws_access_key_id", accessKeyID)
+	if err != nil {
+		return "", errors.Wrap(err, "failed to create access key")
+	}
+
+	_, err = section.NewKey("aws_secret_access_key", secretAccessKey)
+	if err != nil {
+		return "", errors.Wrap(err, "failed to create secret access key")
+	}
+
+	var awsCredentials bytes.Buffer
+	writer := bufio.NewWriter(&awsCredentials)
+	_, err = awsCfg.WriteTo(writer)
+	if err != nil {
+		return "", errors.Wrap(err, "failed to write ini")
+	}
+	if err := writer.Flush(); err != nil {
+		return "", errors.Wrap(err, "failed to flush buffer")
+	}
+
+	return awsCredentials.String(), nil
 }

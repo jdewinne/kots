@@ -36,7 +36,7 @@ import (
 const (
 	NFSMinioPVName, NFSMinioPVCName                                 = "kotsadm-nfs-minio", "kotsadm-nfs-minio"
 	NFSMinioSecretName, NFSMinioDeploymentName, NFSMinioServiceName = "kotsadm-nfs-minio-creds", "kotsadm-nfs-minio", "kotsadm-nfs-minio"
-	NFSMinioProvider, NFSMinioBucketName, NFSMinioRegion            = "aws", "velero", "us-east-1"
+	NFSMinioProvider, NFSMinioBucketName, NFSMinioRegion            = "aws", "velero", "minio"
 	NFSMinioServicePort                                             = 9000
 )
 

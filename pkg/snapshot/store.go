@@ -246,29 +246,6 @@ func ConfigureStore(options ConfigureStoreOptions) (*types.Store, error) {
 		store.Internal.Region = "us-east-1"
 
 	} else if options.NFS {
-		cfg, err := config.GetConfig()
-		if err != nil {
-			return nil, errors.Wrap(err, "failed to get cluster config")
-		}
-
-		clientset, err := kubernetes.NewForConfig(cfg)
-		if err != nil {
-			return nil, errors.Wrap(err, "failed to create clientset")
-		}
-
-		secret, err := clientset.CoreV1().Secrets(options.KOTSNamespace).Get(context.TODO(), NFSMinioSecretName, metav1.GetOptions{})
-		if err != nil {
-			return nil, errors.Wrap(err, "failed to get nfs minio secret")
-		}
-
-		service, err := clientset.CoreV1().Services(options.KOTSNamespace).Get(context.TODO(), NFSMinioServiceName, metav1.GetOptions{})
-		if err != nil {
-			return nil, errors.Wrap(err, "failed to get nfs minio service")
-		}
-
-		if store.NFS == nil {
-			store.NFS = &types.StoreNFS{}
-		}
 		store.AWS = nil
 		store.Google = nil
 		store.Azure = nil
@@ -279,11 +256,21 @@ func ConfigureStore(options ConfigureStoreOptions) (*types.Store, error) {
 		store.Bucket = NFSMinioBucketName
 		store.Path = ""
 
-		store.NFS.AccessKeyID = string(secret.Data["MINIO_ACCESS_KEY"])
-		store.NFS.SecretAccessKey = string(secret.Data["MINIO_SECRET_KEY"])
-		store.NFS.Endpoint = fmt.Sprintf("http://%s.%s:%d", NFSMinioServiceName, options.KOTSNamespace, service.Spec.Ports[0].Port)
-		store.NFS.ObjectStoreClusterIP = service.Spec.ClusterIP
-		store.NFS.Region = NFSMinioRegion
+		cfg, err := config.GetConfig()
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to get cluster config")
+		}
+
+		clientset, err := kubernetes.NewForConfig(cfg)
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to create clientset")
+		}
+
+		nfsStore, err := BuildNFSStore(clientset, options.KOTSNamespace)
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to build nfs store")
+		}
+		store.NFS = nfsStore
 	}
 
 	if err := ValidateStore(store); err != nil {
@@ -924,6 +911,27 @@ func FindBackupStoreLocation() (*velerov1.BackupStorageLocation, error) {
 	}
 
 	return nil, errors.New("global config not found")
+}
+
+func BuildNFSStore(clientset kubernetes.Interface, kotsNamespace string) (*types.StoreNFS, error) {
+	secret, err := clientset.CoreV1().Secrets(kotsNamespace).Get(context.TODO(), NFSMinioSecretName, metav1.GetOptions{})
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to get nfs minio secret")
+	}
+
+	service, err := clientset.CoreV1().Services(kotsNamespace).Get(context.TODO(), NFSMinioServiceName, metav1.GetOptions{})
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to get nfs minio service")
+	}
+
+	nfsStore := types.StoreNFS{}
+	nfsStore.AccessKeyID = string(secret.Data["MINIO_ACCESS_KEY"])
+	nfsStore.SecretAccessKey = string(secret.Data["MINIO_SECRET_KEY"])
+	nfsStore.Endpoint = fmt.Sprintf("http://%s.%s:%d", NFSMinioServiceName, kotsNamespace, service.Spec.Ports[0].Port)
+	nfsStore.ObjectStoreClusterIP = service.Spec.ClusterIP
+	nfsStore.Region = NFSMinioRegion
+
+	return &nfsStore, nil
 }
 
 func ValidateStore(store *types.Store) error {
