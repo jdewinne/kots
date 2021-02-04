@@ -40,7 +40,6 @@ func BackupCmd() *cobra.Command {
 
 	cmd.AddCommand(BackupListCmd())
 	cmd.AddCommand(BackupConfigureNFSCmd())
-	cmd.AddCommand(BackupPrintNFSConfigCmd())
 
 	return cmd
 }

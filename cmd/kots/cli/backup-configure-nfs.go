@@ -19,7 +19,6 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"gopkg.in/ini.v1"
-	"k8s.io/client-go/kubernetes"
 )
 
 func BackupConfigureNFSCmd() *cobra.Command {
@@ -99,7 +98,7 @@ func BackupConfigureNFSCmd() *cobra.Command {
 			}
 
 			log.FinishSpinner()
-			log.ActionWithSpinner("Creating Default Bucket")
+			log.ActionWithSpinner("Creating default bucket")
 
 			err = snapshot.CreateNFSBucket(cmd.Context(), clientset, namespace)
 			if err != nil {
@@ -115,12 +114,44 @@ func BackupConfigureNFSCmd() *cobra.Command {
 			}
 
 			if veleroNamespace == "" {
-				c, err := getNFSMinioVeleroConfig(clientset, namespace)
+				// velero not found, install and configure velero
+
+				log.ActionWithoutSpinner("Installing and configuring Velero")
+
+				nfsStore, err := snapshot.BuildNFSStore(clientset, namespace)
 				if err != nil {
-					return errors.Wrap(err, "failed to get nfs minio velero config")
+					return errors.Wrap(err, "failed to build nfs store")
 				}
-				log.ActionWithoutSpinner("NFS configuration for the Admin Console is successful, but no Velero installation has been detected.")
-				c.LogInfo(log)
+
+				creds, err := formatCredentials(nfsStore.AccessKeyID, nfsStore.SecretAccessKey)
+				if err != nil {
+					return errors.Wrap(err, "failed to format credentials")
+				}
+
+				publicURL := fmt.Sprintf("http://%s:%d", nfsStore.ObjectStoreClusterIP, snapshot.NFSMinioServicePort)
+
+				opts := snapshot.VeleroInstallOptions{
+					Plugins:      []string{"velero/velero-plugin-for-aws:v1.1.0"},
+					ProviderName: snapshot.NFSMinioProvider,
+					BucketName:   snapshot.NFSMinioBucketName,
+					SecretData:   creds,
+					BackupStorageConfig: map[string]string{
+						"region":           snapshot.NFSMinioRegion,
+						"s3ForcePathStyle": "true",
+						"s3Url":            nfsStore.Endpoint,
+						"publicURL":        publicURL,
+					},
+					VolumeSnapshotConfig: map[string]string{
+						"region": snapshot.NFSMinioRegion,
+					},
+					Wait: true,
+				}
+				if err := snapshot.InstallVelero(opts, *registryOptions); err != nil {
+					return errors.Wrap(err, "failed to install velero")
+				}
+
+				log.ActionWithoutSpinner("NFS configured successfully.")
+
 				return nil
 			}
 
@@ -143,6 +174,7 @@ func BackupConfigureNFSCmd() *cobra.Command {
 			}
 
 			log.FinishSpinner()
+			log.ActionWithoutSpinner("NFS configured successfully.")
 
 			return nil
 		},
@@ -156,47 +188,6 @@ func BackupConfigureNFSCmd() *cobra.Command {
 	registryFlags(cmd.Flags())
 
 	return cmd
-}
-
-type NFSMinioVeleroConfig struct {
-	Credentials   string
-	VeleroCommand string
-}
-
-func (c *NFSMinioVeleroConfig) LogInfo(log *logger.Logger) {
-	log.ActionWithoutSpinner("Follow these instructions to set up Velero:\n")
-	log.Info("[1] Save the following credentials in a file:\n\n%s", c.Credentials)
-	log.Info("[2] Install the Velero CLI by following these instructions: https://velero.io/docs/v1.3.2/basic-install/#install-the-cli")
-	log.Info("[3] Run the following command to install Velero:\n\n%s", c.VeleroCommand)
-	log.ActionWithoutSpinner("")
-}
-
-func getNFSMinioVeleroConfig(clientset kubernetes.Interface, namespace string) (*NFSMinioVeleroConfig, error) {
-	nfsStore, err := snapshot.BuildNFSStore(clientset, namespace)
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to build nfs store")
-	}
-
-	credsStr, err := formatCredentials(nfsStore.AccessKeyID, nfsStore.SecretAccessKey)
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to format credentials")
-	}
-
-	publicURL := fmt.Sprintf("http://%s:%d", nfsStore.ObjectStoreClusterIP, snapshot.NFSMinioServicePort)
-	s3URL := nfsStore.Endpoint
-	veleroCommand := fmt.Sprintf(`velero install \
-	--secret-file /path/to/credentials-file \
-	--provider aws \
-	--plugins velero/velero-plugin-for-aws:v1.1.0 \
-	--bucket velero \
-	--backup-location-config region=%s,s3ForcePathStyle=\"true\",s3Url=%s,publicUrl=%s \
-	--snapshot-location-config region=%s \
-	--use-restic`, snapshot.NFSMinioRegion, s3URL, publicURL, snapshot.NFSMinioRegion)
-
-	return &NFSMinioVeleroConfig{
-		Credentials:   credsStr,
-		VeleroCommand: veleroCommand,
-	}, nil
 }
 
 func promptForNFSReset(log *logger.Logger, warningMsg string) bool {
@@ -224,31 +215,31 @@ func promptForNFSReset(log *logger.Logger, warningMsg string) bool {
 	}
 }
 
-func formatCredentials(accessKeyID, secretAccessKey string) (string, error) {
+func formatCredentials(accessKeyID, secretAccessKey string) ([]byte, error) {
 	awsCfg := ini.Empty()
 	section, err := awsCfg.NewSection("default")
 	if err != nil {
-		return "", errors.Wrap(err, "failed to create default section in aws creds")
+		return nil, errors.Wrap(err, "failed to create default section in aws creds")
 	}
 	_, err = section.NewKey("aws_access_key_id", accessKeyID)
 	if err != nil {
-		return "", errors.Wrap(err, "failed to create access key")
+		return nil, errors.Wrap(err, "failed to create access key")
 	}
 
 	_, err = section.NewKey("aws_secret_access_key", secretAccessKey)
 	if err != nil {
-		return "", errors.Wrap(err, "failed to create secret access key")
+		return nil, errors.Wrap(err, "failed to create secret access key")
 	}
 
 	var awsCredentials bytes.Buffer
 	writer := bufio.NewWriter(&awsCredentials)
 	_, err = awsCfg.WriteTo(writer)
 	if err != nil {
-		return "", errors.Wrap(err, "failed to write ini")
+		return nil, errors.Wrap(err, "failed to write ini")
 	}
 	if err := writer.Flush(); err != nil {
-		return "", errors.Wrap(err, "failed to flush buffer")
+		return nil, errors.Wrap(err, "failed to flush buffer")
 	}
 
-	return strings.TrimSpace(awsCredentials.String()), nil
+	return awsCredentials.Bytes(), nil
 }

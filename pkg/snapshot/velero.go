@@ -2,10 +2,17 @@ package snapshot
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"regexp"
 
 	"github.com/pkg/errors"
+	kotsadmtypes "github.com/replicatedhq/kots/pkg/kotsadm/types"
+	velerov1api "github.com/vmware-tanzu/velero/pkg/apis/velero/v1"
+	"github.com/vmware-tanzu/velero/pkg/client"
 	veleroclientv1 "github.com/vmware-tanzu/velero/pkg/generated/clientset/versioned/typed/velero/v1"
+	"github.com/vmware-tanzu/velero/pkg/install"
+	kubeutil "github.com/vmware-tanzu/velero/pkg/util/kube"
 	v1 "k8s.io/api/apps/v1"
 	kuberneteserrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -18,6 +25,17 @@ var (
 	dockerImageNameRegex = regexp.MustCompile("(?:([^\\/]+)\\/)?(?:([^\\/]+)\\/)?([^@:\\/]+)(?:[@:](.+))")
 )
 
+type VeleroInstallOptions struct {
+	Plugins              []string
+	ProviderName         string
+	BucketName           string
+	Prefix               string
+	SecretData           []byte
+	BackupStorageConfig  map[string]string
+	VolumeSnapshotConfig map[string]string
+	Wait                 bool
+}
+
 type VeleroStatus struct {
 	Version string
 	Plugins []string
@@ -25,6 +43,75 @@ type VeleroStatus struct {
 
 	ResticVersion string
 	ResticStatus  string
+}
+
+func InstallVelero(opts VeleroInstallOptions, registryOptions kotsadmtypes.KotsadmOptions) error {
+	image := install.DefaultImage
+	// TODO NOW handle image pull secret option in velero when rewriting image
+
+	veleroPodResources, err := kubeutil.ParseResourceRequirements(install.DefaultVeleroPodCPURequest, install.DefaultVeleroPodMemRequest, install.DefaultVeleroPodCPULimit, install.DefaultVeleroPodMemLimit)
+	if err != nil {
+		return errors.Wrap(err, "failed to parse velero resource requirements")
+	}
+	resticPodResources, err := kubeutil.ParseResourceRequirements(install.DefaultResticPodCPURequest, install.DefaultResticPodMemRequest, install.DefaultResticPodCPULimit, install.DefaultResticPodMemLimit)
+	if err != nil {
+		return errors.Wrap(err, "failed to parse restic resource requirements")
+	}
+
+	vo := &install.VeleroOptions{
+		Namespace:               velerov1api.DefaultNamespace,
+		Image:                   image,
+		ProviderName:            opts.ProviderName,
+		Bucket:                  opts.BucketName,
+		Prefix:                  opts.Prefix,
+		VeleroPodResources:      veleroPodResources,
+		ResticPodResources:      resticPodResources,
+		SecretData:              opts.SecretData,
+		UseRestic:               true,
+		UseVolumeSnapshots:      true,
+		BSLConfig:               opts.BackupStorageConfig,
+		VSLConfig:               opts.VolumeSnapshotConfig,
+		Plugins:                 opts.Plugins,
+		NoDefaultBackupLocation: false,
+		DefaultVolumesToRestic:  true,
+	}
+
+	resources, err := install.AllResources(vo)
+	if err != nil {
+		return errors.Wrap(err, "failed to get resources")
+	}
+
+	config := client.VeleroConfig{}
+	f := client.NewFactory("install", config)
+
+	dynamicClient, err := f.DynamicClient()
+	if err != nil {
+		return err
+	}
+	factory := client.NewDynamicFactory(dynamicClient)
+
+	errorMsg := fmt.Sprintf("\n\nError installing Velero. Use `kubectl logs deploy/velero -n %s` to check the deploy logs", velerov1api.DefaultNamespace)
+
+	err = install.Install(factory, resources, os.Stdout)
+	if err != nil {
+		return errors.Wrap(err, errorMsg)
+	}
+
+	// TODO NOW: patch velero deployment to include imagepullsecret in existing airgap
+
+	if opts.Wait {
+		fmt.Println("Waiting for Velero deployment to be ready.")
+		if _, err = install.DeploymentIsReady(factory, velerov1api.DefaultNamespace); err != nil {
+			return errors.Wrap(err, errorMsg)
+		}
+
+		fmt.Println("Waiting for Velero restic daemonset to be ready.")
+		if _, err = install.DaemonSetIsReady(factory, velerov1api.DefaultNamespace); err != nil {
+			return errors.Wrap(err, errorMsg)
+		}
+	}
+
+	return nil
 }
 
 func DetectVeleroNamespace() (string, error) {
