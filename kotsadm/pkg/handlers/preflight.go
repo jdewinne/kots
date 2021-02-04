@@ -70,21 +70,17 @@ func (h *Handler) GetLatestPreflightResultsForSequenceZero(w http.ResponseWriter
 
 	skipPreflights, _ := strconv.ParseBool(r.URL.Query().Get("skipPreflights"))
 
-	fmt.Println("_----++++-----", skipPreflights)
+	license, err := store.GetStore().GetLatestLicenseForApp(result.AppID)
+	if err != nil {
+		logger.Error(err)
+		w.WriteHeader(500)
+		return
+	}
 
-	if skipPreflights {
-		license, err := store.GetStore().GetLatestLicenseForApp(result.AppID)
-		if err != nil {
-			logger.Error(err)
-			w.WriteHeader(500)
-			return
-		}
-
-		if err := sendPreflightsReportToReplicatedApp(license.Spec.LicenseID, result.AppSlug, result.ClusterID, 0, skipPreflights, "", false); err != nil {
-			logger.Error(err)
-			w.WriteHeader(500)
-			return
-		}
+	if err := sendPreflightsReportToReplicatedApp(license.Spec.LicenseID, result.AppSlug, result.ClusterID, 0, skipPreflights, "", false); err != nil {
+		logger.Error(err)
+		w.WriteHeader(500)
+		return
 	}
 
 	response := GetPreflightResultResponse{

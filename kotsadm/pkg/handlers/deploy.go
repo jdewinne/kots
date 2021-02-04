@@ -1,9 +1,12 @@
 package handlers
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
 	"io/ioutil"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"time"
@@ -37,8 +40,20 @@ type UpdateUndeployResultRequest struct {
 	IsError bool   `json:"isError"`
 }
 
+type DeployAppVersionResponse struct {
+	IsSkipPreflights bool `json:"isSkipPreflights"`
+}
+
 func (h *Handler) DeployAppVersion(w http.ResponseWriter, r *http.Request) {
 	appSlug := mux.Vars(r)["appSlug"]
+
+	request := DeployAppVersionResponse{}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		logger.Error(err)
+		w.WriteHeader(400)
+		return
+	}
+
 	sequence, err := strconv.Atoi(mux.Vars(r)["sequence"])
 	if err != nil {
 		logger.Error(err)
@@ -64,6 +79,36 @@ func (h *Handler) DeployAppVersion(w http.ResponseWriter, r *http.Request) {
 		logger.Error(err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
+	}
+
+	if request.IsSkipPreflights {
+		go func() {
+			<-time.After(20 * time.Second)
+			license, err := store.GetStore().GetLatestLicenseForApp(a.ID)
+			if err != nil {
+				logger.Error(err)
+				w.WriteHeader(500)
+				return
+			}
+
+			clusterID := downstreams[0].ClusterID
+
+			currentVersion, err := downstream.GetCurrentVersion(a.ID, clusterID)
+			if err != nil {
+				err = errors.Wrap(err, "failed to get current downstream version")
+				logger.Error(err)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+
+			fmt.Println("+++____++++++++", currentVersion.PreflightResult)
+			err = updatePreflightsReportToReplicatedApp(license.Spec.LicenseID, appSlug, clusterID, currentVersion.Status, true)
+			if err != nil {
+				err = errors.Wrap(err, "failed to set app undeploy status")
+				logger.Error(err)
+				return
+			}
+		}()
 	}
 
 	if err := downstream.DeleteDownstreamDeployStatus(a.ID, downstreams[0].ClusterID, int64(sequence)); err != nil {
@@ -230,4 +275,42 @@ func (h *Handler) UpdateUndeployResult(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusOK)
 	return
+}
+
+func updatePreflightsReportToReplicatedApp(licenseID string, appSlug string, clusterID string, installStatus string, hasWarnOrErr bool) error {
+	urlValues := url.Values{}
+
+	hasWarnOrErrToStr := fmt.Sprintf("%t", hasWarnOrErr)
+
+	urlValues.Set("installStatus", installStatus)
+	urlValues.Set("hasWarnOrErr", hasWarnOrErrToStr)
+
+	url := fmt.Sprintf("http://replicated-app.default.svc.cluster.local:3000/preflights/reporting/update/%s/%s?%s", appSlug, clusterID, urlValues.Encode())
+
+	var buf bytes.Buffer
+	postReq, err := http.NewRequest("POST", url, &buf)
+	if err != nil {
+		return errors.Wrap(err, "failed to call newrequest")
+	}
+	postReq.Header.Add("Authorization", licenseID)
+	postReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(postReq)
+	if err != nil {
+		return errors.Wrap(err, "failed to send preflights reports")
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 201 {
+		return errors.Errorf("Unexpected status code %d", resp.StatusCode)
+	}
+
+	b, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return errors.Wrap(err, "failed to read")
+	}
+
+	fmt.Printf("%s\n", b)
+
+	return nil
 }

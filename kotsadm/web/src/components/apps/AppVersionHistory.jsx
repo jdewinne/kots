@@ -108,7 +108,6 @@ class AppVersionHistory extends Component {
   }
 
   fetchKotsDownstreamHistory = async () => {
-    const { isSkipPreflights } = this.state;
     const { match } = this.props;
     const appSlug = match.params.slug;
 
@@ -120,7 +119,7 @@ class AppVersionHistory extends Component {
     });
 
     try {
-      const res = await fetch(`${window.env.API_ENDPOINT}/app/${appSlug}/versions?skipPreflights=${isSkipPreflights}`, {
+      const res = await fetch(`${window.env.API_ENDPOINT}/app/${appSlug}/versions`, {
         headers: {
           "Authorization": Utilities.getToken(),
           "Content-Type": "application/json",
@@ -335,9 +334,9 @@ class AppVersionHistory extends Component {
 
   finalizeDeployment = async () => {
     const { match, updateCallback } = this.props;
-    const { versionToDeploy } = this.state;
+    const { versionToDeploy, isSkipPreflights } = this.state;
     this.setState({ displayConfirmDeploymentModal: false, confirmType: "" });
-    await this.props.makeCurrentVersion(match.params.slug, versionToDeploy);
+    await this.props.makeCurrentVersion(match.params.slug, versionToDeploy, isSkipPreflights);
     await this.fetchKotsDownstreamHistory();
     this.setState({ versionToDeploy: null });
 
