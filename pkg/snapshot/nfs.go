@@ -94,7 +94,7 @@ func DeployNFSMinio(ctx context.Context, clientset kubernetes.Interface, deployO
 	}
 	err = writeMinioKeysSHAFile(ctx, clientset, secret, deployOptions, registryOptions)
 	if err != nil {
-		return errors.Wrap(err, "failed to create minio keys sha file")
+		return errors.Wrap(err, "failed to write minio keys sha file")
 	}
 	marshalledSecret, err := k8syaml.Marshal(secret)
 	if err != nil {
