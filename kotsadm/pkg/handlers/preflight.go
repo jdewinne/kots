@@ -70,6 +70,8 @@ func (h *Handler) GetLatestPreflightResultsForSequenceZero(w http.ResponseWriter
 
 	skipPreflights, _ := strconv.ParseBool(r.URL.Query().Get("skipPreflights"))
 
+	fmt.Println("_----++++-----", skipPreflights)
+
 	if skipPreflights {
 		license, err := store.GetStore().GetLatestLicenseForApp(result.AppID)
 		if err != nil {
@@ -78,15 +80,11 @@ func (h *Handler) GetLatestPreflightResultsForSequenceZero(w http.ResponseWriter
 			return
 		}
 
-		req, err := sendPreflightsReportToReplicatedApp(license.Spec.LicenseID, result.AppSlug, skipPreflights, result.InstallState, false)
-		if err != nil {
-			fmt.Printf("%+v\n", err)
+		if err := sendPreflightsReportToReplicatedApp(license.Spec.LicenseID, result.AppSlug, result.ClusterID, 0, skipPreflights, "", false); err != nil {
 			logger.Error(err)
 			w.WriteHeader(500)
 			return
 		}
-
-		fmt.Println("____--", req)
 	}
 
 	response := GetPreflightResultResponse{
@@ -304,38 +302,44 @@ func (h *Handler) PostPreflightStatus(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(204)
 }
 
-func sendPreflightsReportToReplicatedApp(licenseID string, appSlug string, skipPreflights bool, installStatus string, hasWarnOrErr bool) (bool, error) {
+func sendPreflightsReportToReplicatedApp(licenseID string, appSlug string, clusterID string, sequence int, skipPreflights bool, installStatus string, hasWarnOrErr bool) error {
 	urlValues := url.Values{}
 
-	skipPreflightsToStr := fmt.Sprintf("%t", skipPreflights)
+	sequenceToStr := strconv.Itoa(sequence)
 	hasWarnOrErrToStr := fmt.Sprintf("%t", hasWarnOrErr)
+	skipPreflightsToStr := fmt.Sprintf("%t", skipPreflights)
 
+	urlValues.Set("sequence", sequenceToStr)
 	urlValues.Set("skipPreflights", skipPreflightsToStr)
 	urlValues.Set("installStatus", installStatus)
 	urlValues.Set("hasWarnOrErr", hasWarnOrErrToStr)
 
-	url := fmt.Sprintf("http://replicated-app.default.svc.cluster.local:3000/preflights/reporting/%s?%s", appSlug, urlValues.Encode())
+	url := fmt.Sprintf("http://replicated-app.default.svc.cluster.local:3000/preflights/reporting/%s/%s?%s", appSlug, clusterID, urlValues.Encode())
 
 	var buf bytes.Buffer
 	postReq, err := http.NewRequest("POST", url, &buf)
 	if err != nil {
-		return false, errors.Wrap(err, "failed to call newrequest")
+		return errors.Wrap(err, "failed to call newrequest")
 	}
 	postReq.Header.Add("Authorization", licenseID)
 	postReq.Header.Set("Content-Type", "application/json")
 
 	resp, err := http.DefaultClient.Do(postReq)
 	if err != nil {
-		return false, errors.Wrap(err, "failed to check for updates")
+		return errors.Wrap(err, "failed to send preflights reports")
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode != 201 {
+		return errors.Errorf("Unexpected status code %d", resp.StatusCode)
+	}
+
 	b, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		return false, errors.Wrap(err, "failed to read")
+		return errors.Wrap(err, "failed to read")
 	}
 
 	fmt.Printf("%s\n", b)
 
-	return false, nil
+	return nil
 }

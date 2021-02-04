@@ -1,9 +1,13 @@
 package handlers
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"net/http"
+	"net/url"
+	"strconv"
 
 	"github.com/gorilla/mux"
 	"github.com/pkg/errors"
@@ -249,6 +253,7 @@ type GetAppVersionsResponse struct {
 
 func (h *Handler) GetAppVersionHistory(w http.ResponseWriter, r *http.Request) {
 	appSlug := mux.Vars(r)["appSlug"]
+	skipPreflights, _ := strconv.ParseBool(r.URL.Query().Get("skipPreflights"))
 
 	foundApp, err := store.GetStore().GetAppFromSlug(appSlug)
 	if err != nil {
@@ -280,6 +285,25 @@ func (h *Handler) GetAppVersionHistory(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
+
+	fmt.Println("----++++++-----", skipPreflights)
+
+	// if skipPreflights && currentVersion.Status != "deploying" {
+	// 	license, err := store.GetStore().GetLatestLicenseForApp(foundApp.ID)
+	// 	if err != nil {
+	// 		logger.Error(err)
+	// 		w.WriteHeader(500)
+	// 		return
+	// 	}
+
+	// 	hasPreflightsWarnOrErr := strings.Contains(currentVersion.PreflightResult, `"isFail":true`) || strings.Contains(currentVersion.PreflightResult, `"isWarn":true`)
+
+	// 	if err := updatePreflightsReportToReplicatedApp(license.Spec.LicenseID, appSlug, currentVersion.Status, hasPreflightsWarnOrErr); err != nil {
+	// 		logger.Error(err)
+	// 		w.WriteHeader(500)
+	// 		return
+	// 	}
+	// }
 
 	pendingVersions, err := downstream.GetPendingVersions(foundApp.ID, clusterID)
 	if err != nil {
@@ -380,4 +404,42 @@ func (h *Handler) RemoveApp(w http.ResponseWriter, r *http.Request) {
 	}
 
 	JSON(w, http.StatusOK, response)
+}
+
+func updatePreflightsReportToReplicatedApp(licenseID string, appSlug string, installStatus string, hasWarnOrErr bool) error {
+	urlValues := url.Values{}
+
+	hasWarnOrErrToStr := fmt.Sprintf("%t", hasWarnOrErr)
+
+	urlValues.Set("installStatus", installStatus)
+	urlValues.Set("hasWarnOrErr", hasWarnOrErrToStr)
+
+	url := fmt.Sprintf("http://replicated-app.default.svc.cluster.local:3000/preflights/reporting/update/%s?%s", appSlug, urlValues.Encode())
+
+	var buf bytes.Buffer
+	postReq, err := http.NewRequest("POST", url, &buf)
+	if err != nil {
+		return errors.Wrap(err, "failed to call newrequest")
+	}
+	postReq.Header.Add("Authorization", licenseID)
+	postReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(postReq)
+	if err != nil {
+		return errors.Wrap(err, "failed to send preflights reports")
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return errors.Errorf("Unexpected status code %d", resp.StatusCode)
+	}
+
+	b, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return errors.Wrap(err, "failed to read")
+	}
+
+	fmt.Printf("%s\n", b)
+
+	return nil
 }
