@@ -145,7 +145,8 @@ class SnapshotSettings extends Component {
       .catch((err) => {
         console.error(err);
         this.setState({
-          updatingSettings: false
+          updatingSettings: false,
+          updateErrorMsg: "Something went wrong, please try again."
         });
       });
   }
@@ -205,7 +206,8 @@ class SnapshotSettings extends Component {
       .catch((err) => {
         console.error(err);
         this.setState({
-          configuringNFSBackend: false
+          configuringNFSBackend: false,
+          configureNFSBackendErrorMsg: "Something went wrong, please try again."
         });
       });
   }

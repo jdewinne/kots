@@ -7,6 +7,7 @@ import Modal from "react-modal";
 
 import ConfigureSnapshots from "./ConfigureSnapshots";
 import CodeSnippet from "../shared/CodeSnippet";
+import Loader from "../shared/Loader";
 
 import "../../scss/components/shared/SnapshotForm.scss";
 
@@ -765,6 +766,7 @@ class SnapshotStorageDestination extends Component {
                   {this.renderDestinationFields()}
                   <div className="flex">
                     <button className="btn primary blue" disabled={updatingSettings} onClick={this.onSubmit}>{updatingSettings ? "Updating" : "Update storage settings"}</button>
+                    {updatingSettings && <Loader className="u-marginLeft--10" size="32" />}
                     {updateConfirm &&
                       <div className="u-marginLeft--10 flex alignItems--center">
                         <span className="icon checkmark-icon" />
@@ -822,8 +824,9 @@ class SnapshotStorageDestination extends Component {
                   <input type="text" className="Input" placeholder="/path/to/nfs-directory" value={this.state.tmpNFSPath} onChange={(e) => this.setState({ tmpNFSPath: e.target.value })} />
                 </div>
               </div>
-              <div className="u-marginTop--10">
-                <div className="flex justifyContent--flexStart">
+              <div>
+                <div className="flex justifyContent--flexStart alignItems-center">
+                  {this.props.configuringNFSBackend && <Loader className="u-marginRight--5" size="32" />}
                   <button disabled={!this.state.tmpNFSServer || !this.state.tmpNFSPath || this.props.configuringNFSBackend} type="button" className="btn blue primary u-marginRight--10" onClick={this.configureNFSBackend}>{this.props.configuringNFSBackend ? "Configuring" : "Configure"}</button>
                   <button type="button" className="btn secondary" onClick={this.props.toggleConfigureNFSBackendModal}>Cancel</button>
                 </div>
