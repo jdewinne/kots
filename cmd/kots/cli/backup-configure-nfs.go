@@ -159,14 +159,15 @@ func BackupConfigureNFSCmd() *cobra.Command {
 }
 
 type NFSMinioVeleroConfig struct {
-	Credentials string
-	VeleroFlags string
+	Credentials   string
+	VeleroCommand string
 }
 
 func (c *NFSMinioVeleroConfig) LogInfo(log *logger.Logger) {
-	log.ActionWithoutSpinner("Use the following information to set up Velero:\n")
+	log.ActionWithoutSpinner("Follow these instructions to set up Velero:\n")
 	log.Info("[1] Save the following credentials in a file:\n\n%s", c.Credentials)
-	log.Info("[2] Pass the following flags to the velero install command:\n\n%s", c.VeleroFlags)
+	log.Info("[2] Install the Velero CLI by following these instructions: https://velero.io/docs/v1.3.2/basic-install/#install-the-cli")
+	log.Info("[3] Run the following command to install Velero:\n\n%s", c.VeleroCommand)
 	log.ActionWithoutSpinner("")
 }
 
@@ -183,11 +184,18 @@ func getNFSMinioVeleroConfig(clientset kubernetes.Interface, namespace string) (
 
 	publicURL := fmt.Sprintf("http://%s:%d", nfsStore.ObjectStoreClusterIP, snapshot.NFSMinioServicePort)
 	s3URL := nfsStore.Endpoint
-	veleroFlags := fmt.Sprintf("--bucket velero \\\n--secret-file /path/to/credentials \\\n--backup-location-config region=%s,s3ForcePathStyle=\"true\",s3Url=%s,publicUrl=%s", snapshot.NFSMinioRegion, s3URL, publicURL)
+	veleroCommand := fmt.Sprintf(`velero install \
+	--secret-file /path/to/credentials-file \
+	--provider aws \
+	--plugins velero/velero-plugin-for-aws:v1.1.0 \
+	--bucket velero \
+	--backup-location-config region=%s,s3ForcePathStyle=\"true\",s3Url=%s,publicUrl=%s \
+	--snapshot-location-config region=%s \
+	--use-restic`, snapshot.NFSMinioRegion, s3URL, publicURL, snapshot.NFSMinioRegion)
 
 	return &NFSMinioVeleroConfig{
-		Credentials: credsStr,
-		VeleroFlags: veleroFlags,
+		Credentials:   credsStr,
+		VeleroCommand: veleroCommand,
 	}, nil
 }
 

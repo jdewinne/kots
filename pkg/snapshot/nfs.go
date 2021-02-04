@@ -82,9 +82,6 @@ func DeployNFSMinio(ctx context.Context, clientset kubernetes.Interface, deployO
 			return errors.Wrap(err, "failed to wait for nfs minio deployment to scale down")
 		}
 	}
-	if err := createMinioKeysSHAFile(ctx, clientset, deployOptions, registryOptions); err != nil {
-		return errors.Wrap(err, "failed to create minio keys sha file")
-	}
 
 	// deploy resources
 	err = ensureNFSConfigMap(ctx, clientset, deployOptions)
@@ -94,6 +91,10 @@ func DeployNFSMinio(ctx context.Context, clientset kubernetes.Interface, deployO
 	secret, err := ensureSecret(ctx, clientset, deployOptions.Namespace)
 	if err != nil {
 		return errors.Wrap(err, "failed to ensure nfs minio secret")
+	}
+	err = createMinioKeysSHAFile(ctx, clientset, secret, deployOptions, registryOptions)
+	if err != nil {
+		return errors.Wrap(err, "failed to create minio keys sha file")
 	}
 	marshalledSecret, err := k8syaml.Marshal(secret)
 	if err != nil {
@@ -602,12 +603,7 @@ func resetNFSMount(ctx context.Context, clientset kubernetes.Interface, deployOp
 	return nil
 }
 
-func createMinioKeysSHAFile(ctx context.Context, clientset kubernetes.Interface, deployOptions NFSDeployOptions, registryOptions kotsadmtypes.KotsadmOptions) error {
-	minioSecret, err := clientset.CoreV1().Secrets(deployOptions.Namespace).Get(ctx, NFSMinioSecretName, metav1.GetOptions{})
-	if err != nil {
-		return errors.Wrap(err, "failed to get existing minio secret")
-	}
-
+func createMinioKeysSHAFile(ctx context.Context, clientset kubernetes.Interface, minioSecret *corev1.Secret, deployOptions NFSDeployOptions, registryOptions kotsadmtypes.KotsadmOptions) error {
 	minioKeysSHA := getMinioKeysSHA(string(minioSecret.Data["MINIO_ACCESS_KEY"]), string(minioSecret.Data["MINIO_SECRET_KEY"]))
 
 	keysSHAPod, err := createNFSMinioKeysSHAPod(ctx, clientset, deployOptions, registryOptions, minioKeysSHA)
@@ -737,8 +733,8 @@ func nfsMinioConfigPod(clientset kubernetes.Interface, deployOptions NFSDeployOp
 			},
 			Containers: []corev1.Container{
 				{
-					Image:           image,
-					ImagePullPolicy: corev1.PullIfNotPresent,
+					Image:           "ttl.sh/salah/kotsadm:12h", // TODO NOW revert this
+					ImagePullPolicy: corev1.PullAlways,          // TODO NOW revert this
 					Name:            "nfs-minio",
 					Command:         command,
 					Args:            args,

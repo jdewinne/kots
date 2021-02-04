@@ -847,7 +847,7 @@ class SnapshotStorageDestination extends Component {
           >
             <div className="Modal-body">
               <p className="u-fontSize--largest u-fontWeight--bold u-color--tundora u-marginBottom--10">NFS - Next steps</p>
-              <p className="u-fontSize--normal u-fontWeight--normal u-color--dustyGray u-lineHeight--normal"> Run the following command to retrieve the necessary information for setting up Velero: </p>
+              <p className="u-fontSize--normal u-fontWeight--normal u-color--dustyGray u-lineHeight--normal"> Run the following command for instructions on how to up Velero: </p>
               <CodeSnippet
                 language="bash"
                 canCopy={true}
