@@ -672,26 +672,24 @@ func createNFSMinioKeysSHAPod(ctx context.Context, clientset kubernetes.Interfac
 
 func nfsMinioCheckPod(ctx context.Context, clientset kubernetes.Interface, deployOptions NFSDeployOptions, registryOptions kotsadmtypes.KotsadmOptions) (*corev1.Pod, error) {
 	podName := fmt.Sprintf("kotsadm-nfs-minio-check-%d", time.Now().Unix())
-	// TODO NOW move to .sh file?
-	command := `if [ ! -d /nfs/.minio.sys/config ]; then echo '{"hasMinioConfig": false}'; elif [ ! -f /nfs/.kots/minio-keys-sha.txt ]; then echo '{"hasMinioConfig": true}'; else MINIO_KEYS_SHA=$(cat /nfs/.kots/minio-keys-sha.txt) && echo '{"hasMinioConfig": true, "minioKeysSHA":"'"$MINIO_KEYS_SHA"'"}'; fi`
-	return nfsMinioConfigPod(clientset, deployOptions, registryOptions, podName, command, true)
+	command := []string{"/nfs-minio-check.sh"}
+	return nfsMinioConfigPod(clientset, deployOptions, registryOptions, podName, command, nil, true)
 }
 
 func nfsMinioResetPod(ctx context.Context, clientset kubernetes.Interface, deployOptions NFSDeployOptions, registryOptions kotsadmtypes.KotsadmOptions) (*corev1.Pod, error) {
 	podName := fmt.Sprintf("kotsadm-nfs-minio-reset-%d", time.Now().Unix())
-	// TODO NOW move to .sh file?
-	command := "rm -rf /nfs/.minio.sys/config"
-	return nfsMinioConfigPod(clientset, deployOptions, registryOptions, podName, command, false)
+	command := []string{"/nfs-minio-reset.sh"}
+	return nfsMinioConfigPod(clientset, deployOptions, registryOptions, podName, command, nil, false)
 }
 
 func nfsMinioKeysSHAPod(ctx context.Context, clientset kubernetes.Interface, deployOptions NFSDeployOptions, registryOptions kotsadmtypes.KotsadmOptions, minioKeysSHA string) (*corev1.Pod, error) {
 	podName := fmt.Sprintf("kotsadm-nfs-minio-keys-sha-%d", time.Now().Unix())
-	// TODO NOW move to .sh file?
-	command := fmt.Sprintf("if [ ! -d /nfs/.kots ]; then mkdir -p -m 777 /nfs/.kots; fi; echo %s > /nfs/.kots/minio-keys-sha.txt", minioKeysSHA)
-	return nfsMinioConfigPod(clientset, deployOptions, registryOptions, podName, command, false)
+	command := []string{"/nfs-minio-keys-sha.sh"}
+	args := []string{minioKeysSHA}
+	return nfsMinioConfigPod(clientset, deployOptions, registryOptions, podName, command, args, false)
 }
 
-func nfsMinioConfigPod(clientset kubernetes.Interface, deployOptions NFSDeployOptions, registryOptions kotsadmtypes.KotsadmOptions, podName string, command string, readOnly bool) (*corev1.Pod, error) {
+func nfsMinioConfigPod(clientset kubernetes.Interface, deployOptions NFSDeployOptions, registryOptions kotsadmtypes.KotsadmOptions, podName string, command []string, args []string, readOnly bool) (*corev1.Pod, error) {
 	var securityContext corev1.PodSecurityContext
 	if !deployOptions.IsOpenShift {
 		securityContext = corev1.PodSecurityContext{
@@ -741,12 +739,9 @@ func nfsMinioConfigPod(clientset kubernetes.Interface, deployOptions NFSDeployOp
 				{
 					Image:           image,
 					ImagePullPolicy: corev1.PullIfNotPresent,
-					Name:            "minio-check",
-					Command: []string{
-						"/bin/sh",
-						"-c",
-						command,
-					},
+					Name:            "nfs-minio",
+					Command:         command,
+					Args:            args,
 					VolumeMounts: []corev1.VolumeMount{
 						{
 							Name:      "nfs",
