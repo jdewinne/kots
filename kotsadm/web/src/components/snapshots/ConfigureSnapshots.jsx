@@ -3,7 +3,7 @@ import Modal from "react-modal";
 import SnapshotInstallationBox from "./SnapshotInstallationBox";
 
 export default function ConfigureSnapshots(props) {
-  const { configureSnapshotsModal, toggleConfigureModal, snapshotSettings, hideCheckVeleroButton, fetchSnapshotSettings, renderNotVeleroMessage } = props;
+  const { configureSnapshotsModal, toggleConfigureModal, snapshotSettings, hideCheckVeleroButton, fetchSnapshotSettings, renderNotVeleroMessage, toggleConfigureNFSBackendModal } = props;
 
   return (
     <Modal
@@ -43,6 +43,8 @@ export default function ConfigureSnapshots(props) {
                     <a href="https://kots.io/kotsadm/snapshots/supported-providers/" target="_blank" rel="noopener noreferrer" className="snapshotOptions">
                       <span style={{ width: "130px" }}>  <span className="icon cloudIcon u-cursor--pointer u-marginRight--5" /> Other provider  </span>
                       <span className="icon external-link-icon u-cursor--pointer u-marginLeft--30" /></a>
+                    <a className="snapshotOptions" onClick={toggleConfigureNFSBackendModal}>
+                      <span style={{ width: "130px" }}>  <span className="icon cloudIcon u-cursor--pointer u-marginRight--5" /> NFS </span></a>
                   </div>
                   <p className="u-fontSize--small u-fontWeight--medium u-color--dustyGray u-marginTop--20"> With all providers, you must install using the  <span className="inline-code u-marginLeft--5 u-marginRight--5"> --use-restic </span>  flag for snapshots to work. </p>
                 </div>

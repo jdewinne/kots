@@ -28,8 +28,9 @@ import (
 )
 
 type ConfigureNFSSnapshotsBackendResponse struct {
-	Success bool   `json:"success"`
-	Error   string `json:"error,omitempty"`
+	Success   bool   `json:"success"`
+	Error     string `json:"error,omitempty"`
+	Namespace string `json:"namespace,omitempty"`
 }
 
 type ConfigureNFSSnapshotsBackendRequest struct {
@@ -107,6 +108,7 @@ func (h *Handler) ConfigureNFSSnapshotsBackend(w http.ResponseWriter, r *http.Re
 	}
 
 	response.Success = true
+	response.Namespace = os.Getenv("POD_NAMESPACE")
 
 	JSON(w, http.StatusOK, response)
 }

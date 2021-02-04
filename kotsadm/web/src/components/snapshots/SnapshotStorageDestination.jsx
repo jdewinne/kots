@@ -6,6 +6,7 @@ import find from "lodash/find";
 import Modal from "react-modal";
 
 import ConfigureSnapshots from "./ConfigureSnapshots";
+import CodeSnippet from "../shared/CodeSnippet";
 
 import "../../scss/components/shared/SnapshotForm.scss";
 
@@ -96,6 +97,8 @@ class SnapshotStorageDestination extends Component {
 
     nfsPath: "",
     nfsServer: "",
+    tmpNFSPath: "",
+    tmpNFSServer: "",
   };
 
   componentDidMount() {
@@ -339,6 +342,15 @@ class SnapshotStorageDestination extends Component {
   forceSnapshotProviderNFS = async () => {
     this.props.hideResetNFSWarningModal();
     await this.snapshotProviderNFS(true);
+  }
+
+  configureNFSBackend = async () => {
+    this.props.configureNFSBackend(this.state.tmpNFSPath, this.state.tmpNFSServer)
+  }
+
+  forceConfigureNFSBackend = async () => {
+    this.props.hideResetNFSWarningModal();
+    this.props.configureNFSBackend(this.state.tmpNFSPath, this.state.tmpNFSServer, true)
   }
 
   getProviderPayload = (provider, bucket, path) => {
@@ -637,12 +649,12 @@ class SnapshotStorageDestination extends Component {
           <div>
             <div className="flex u-marginBottom--30">
               <div className="flex1 u-paddingRight--5">
-                <p className="u-fontSize--normal u-color--tuna u-fontWeight--bold u-lineHeight--normal u-marginBottom--10">Path</p>
-                <input type="text" className="Input" placeholder="/path/to/nfs-directory" value={this.state.nfsPath} onChange={(e) => { this.handleFormChange("nfsPath", e) }} />
-              </div>
-              <div className="flex1 u-paddingLeft--5">
                 <p className="u-fontSize--normal u-color--tuna u-fontWeight--bold u-lineHeight--normal u-marginBottom--10">Server</p>
                 <input type="text" className="Input" placeholder="NFS server IP address" value={this.state.nfsServer} onChange={(e) => { this.handleFormChange("nfsServer", e) }} />
+              </div>
+              <div className="flex1 u-paddingLeft--5">
+                <p className="u-fontSize--normal u-color--tuna u-fontWeight--bold u-lineHeight--normal u-marginBottom--10">Path</p>
+                <input type="text" className="Input" placeholder="/path/to/nfs-directory" value={this.state.nfsPath} onChange={(e) => { this.handleFormChange("nfsPath", e) }} />
               </div>
             </div>
           </div>
@@ -783,7 +795,69 @@ class SnapshotStorageDestination extends Component {
             hideCheckVeleroButton={this.props.hideCheckVeleroButton}
             configureSnapshotsModal={this.props.configureSnapshotsModal}
             toggleConfigureModal={this.props.toggleConfigureModal}
+            toggleConfigureNFSBackendModal={this.props.toggleConfigureNFSBackendModal}
           />}
+
+        {this.props.showConfigureNFSBackendModal &&
+          <Modal
+            isOpen={this.props.showConfigureNFSBackendModal}
+            onRequestClose={this.props.toggleConfigureNFSBackendModal}
+            shouldReturnFocusAfterClose={false}
+            contentLabel="Configure NFS backend"
+            ariaHideApp={false}
+            className="Modal SmallSize"
+          >
+            <div className="Modal-body">
+              <p className="u-fontSize--largest u-fontWeight--bold u-color--tundora u-marginBottom--10">Configure NFS</p>
+              <p className="u-fontSize--normal u-fontWeight--medium u-color--dustyGray u-lineHeight--normal u-marginBottom--10">
+                Enter the NFS server IP address and the directory path in which you would like to store the snapshots.
+              </p>
+              <div className="flex u-marginBottom--30">
+                <div className="flex1 u-paddingRight--5">
+                  <p className="u-fontSize--normal u-color--tuna u-fontWeight--bold u-lineHeight--normal u-marginBottom--10">Server</p>
+                  <input type="text" className="Input" placeholder="NFS server IP address" value={this.state.tmpNFSServer} onChange={(e) => this.setState({ tmpNFSServer: e.target.value })} />
+                </div>
+                <div className="flex1 u-paddingLeft--5">
+                  <p className="u-fontSize--normal u-color--tuna u-fontWeight--bold u-lineHeight--normal u-marginBottom--10">Path</p>
+                  <input type="text" className="Input" placeholder="/path/to/nfs-directory" value={this.state.tmpNFSPath} onChange={(e) => this.setState({ tmpNFSPath: e.target.value })} />
+                </div>
+              </div>
+              <div className="u-marginTop--10">
+                <div className="flex justifyContent--flexStart">
+                  <button disabled={!this.state.tmpNFSServer || !this.state.tmpNFSPath || this.props.configuringNFSBackend} type="button" className="btn blue primary u-marginRight--10" onClick={this.configureNFSBackend}>{this.props.configuringNFSBackend ? "Configuring" : "Configure"}</button>
+                  <button type="button" className="btn secondary" onClick={this.props.toggleConfigureNFSBackendModal}>Cancel</button>
+                </div>
+                {this.props.configureNFSBackendErrorMsg && <div className="flex u-fontWeight--bold u-fontSize--small u-color--red u-marginBottom--10 u-marginTop--10">{this.props.configureNFSBackendErrorMsg}</div>}
+              </div>
+            </div>
+          </Modal>
+        }
+
+        {this.props.showConfigureNFSNextStepsModal &&
+          <Modal
+            isOpen={this.props.showConfigureNFSNextStepsModal}
+            onRequestClose={this.props.hideConfigureNFSNextStepsModal}
+            shouldReturnFocusAfterClose={false}
+            contentLabel="NFS next steps"
+            ariaHideApp={false}
+            className="Modal SmallSize"
+          >
+            <div className="Modal-body">
+              <p className="u-fontSize--largest u-fontWeight--bold u-color--tundora u-marginBottom--10">NFS - Next steps</p>
+              <p className="u-fontSize--normal u-fontWeight--normal u-color--dustyGray u-lineHeight--normal"> Run the following command to retrieve the necessary information for setting up Velero: </p>
+              <CodeSnippet
+                language="bash"
+                canCopy={true}
+                onCopyText={<span className="u-color--chateauGreen">Command has been copied to your clipboard</span>}
+              >
+                {`kubectl kots backup print-nfs-config --namespace ${this.props.configureNFSBackendNamespace}`}
+              </CodeSnippet>
+              <div className="u-marginTop--10 flex justifyContent--flexStart">
+                <button type="button" className="btn blue primary" onClick={this.props.hideConfigureNFSNextStepsModal}>Ok, got it!</button>
+              </div>
+            </div>
+          </Modal>
+        }
 
         {this.props.showResetNFSWarningModal &&
           <Modal
@@ -796,9 +870,9 @@ class SnapshotStorageDestination extends Component {
           >
             <div className="Modal-body">
               <p className="u-fontSize--large u-color--chestnut u-marginBottom--20">{this.props.resetNFSWarningMessage} Would you like to continue?</p>
-              <div className="u-marginTop--10 flex justifyContent--flexEnd">
+              <div className="u-marginTop--10 flex justifyContent--flexStart">
+                <button type="button" className="btn blue primary u-marginRight--10" onClick={this.props.showConfigureNFSBackendModal ? this.forceConfigureNFSBackend : this.forceSnapshotProviderNFS}>Yes</button>
                 <button type="button" className="btn secondary" onClick={this.props.hideResetNFSWarningModal}>No</button>
-                <button type="button" className="btn blue primary u-marginLeft--10" onClick={this.forceSnapshotProviderNFS}>Yes</button>
               </div>
             </div>
           </Modal>

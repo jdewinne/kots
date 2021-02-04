@@ -22,8 +22,15 @@ class SnapshotSettings extends Component {
     updatingSettings: false,
     updateErrorMsg: "",
     configureSnapshotsModal: false,
+
     showResetNFSWarningModal: false,
     resetNFSWarningMessage: "",
+
+    configuringNFSBackend: false,
+    configureNFSBackendErrorMsg: "",
+    configureNFSBackendNamespace: "",
+    showConfigureNFSNextStepsModal: false,
+    showConfigureNFSBackendModal: false,
   };
 
   fetchSnapshotSettings = (isCheckForVelero) => {
@@ -143,6 +150,66 @@ class SnapshotSettings extends Component {
       });
   }
 
+  configureNFSBackend = (path, server, forceReset = false) => {
+    this.setState({ configuringNFSBackend: true, configureNFSBackendErrorMsg: "" });
+
+    fetch(`${window.env.API_ENDPOINT}/snapshots/nfs`, {
+      method: "PUT",
+      headers: {
+        "Authorization": Utilities.getToken(),
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        nfsOptions: {
+          path,
+          server,
+          forceReset,
+        },
+      })
+    })
+      .then(async (res) => {
+        if (res.status === 409) {
+          const response = await res.json();
+          this.setState({
+            configuringNFSBackend: false,
+            showResetNFSWarningModal: true,
+            resetNFSWarningMessage: response.error,
+          })
+          return;
+        }
+
+        const response = await res.json();
+        if (!res.ok) {
+          this.setState({
+            configuringNFSBackend: false,
+            configureNFSBackendErrorMsg: response.error
+          })
+          return;
+        }
+
+        if (response.success) {
+          this.setState({
+            configuringNFSBackend: false,
+            showConfigureNFSBackendModal: false,
+            showConfigureNFSNextStepsModal: true,
+            configureNFSBackendErrorMsg: "",
+            configureNFSBackendNamespace: response.namespace,
+          });
+        } else {
+          this.setState({
+            configuringNFSBackend: false,
+            configureNFSBackendErrorMsg: response.error
+          })
+        }
+      })
+      .catch((err) => {
+        console.error(err);
+        this.setState({
+          configuringNFSBackend: false
+        });
+      });
+  }
+
   renderNotVeleroMessage = () => {
     return <p className="u-color--chestnut u-fontSize--small u-fontWeight--medium u-lineHeight--normal u-marginTop--12">Not able to find Velero</p>
   }
@@ -163,6 +230,13 @@ class SnapshotSettings extends Component {
     this.setState({ showResetNFSWarningModal: false });
   };
 
+  toggleConfigureNFSBackendModal = () => {
+    this.setState({ showConfigureNFSBackendModal: !this.state.showConfigureNFSBackendModal });
+  };
+  
+  hideConfigureNFSNextStepsModal = () => {
+    this.setState({ showConfigureNFSNextStepsModal: false });
+  };
 
   render() {
     const { isLoadingSnapshotSettings, snapshotSettings, hideCheckVeleroButton, updateConfirm, updatingSettings, updateErrorMsg, isEmptyView } = this.state;
@@ -204,10 +278,21 @@ class SnapshotSettings extends Component {
             isLicenseUpload={isLicenseUpload}
             configureSnapshotsModal={this.state.configureSnapshotsModal}
             toggleConfigureModal={this.toggleConfigureModal}
+            isKurlEnabled={this.props.isKurlEnabled}
+
             showResetNFSWarningModal={this.state.showResetNFSWarningModal}
             resetNFSWarningMessage={this.state.resetNFSWarningMessage}
             hideResetNFSWarningModal={this.hideResetNFSWarningModal}
-            isKurlEnabled={this.props.isKurlEnabled} />
+
+            configureNFSBackend={this.configureNFSBackend}
+            configuringNFSBackend={this.state.configuringNFSBackend}
+            configureNFSBackendErrorMsg={this.state.configureNFSBackendErrorMsg}
+            configureNFSBackendNamespace={this.state.configureNFSBackendNamespace}
+            showConfigureNFSBackendModal={this.state.showConfigureNFSBackendModal}
+            toggleConfigureNFSBackendModal={this.toggleConfigureNFSBackendModal}
+            showConfigureNFSNextStepsModal={this.state.showConfigureNFSNextStepsModal}
+            hideConfigureNFSNextStepsModal={this.hideConfigureNFSNextStepsModal}
+          />
         </div>
       </div>
     );
