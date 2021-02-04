@@ -7,7 +7,6 @@ import (
 	"io/ioutil"
 	"net/http"
 	"os"
-	"os/exec"
 	"regexp"
 	"time"
 
@@ -34,7 +33,7 @@ type InstallMetrics struct {
 	FinishedAt  time.Time `json:"finished"`
 	IsSuccess   bool      `json:"isSuccess"`
 	HostOS      string    `json:"os"`
-	KotsVersion string    `json:"kernel_version"`
+	KotsVersion string    `json:"kots_version"`
 	TestGridID  string    `json:"testgrid_id"`
 	Cause       string    `json:"cause"`
 }
@@ -145,18 +144,6 @@ func InitMetrics(deployOptions *kotsadmtypes.DeployOptions, isAirgap bool) (*Kot
 	}
 	m.endpoint.UpstreamEp = getEndpoint(deployOptions)
 	im.StartedAt = time.Now()
-	// TODO Get the MachineID and use it as ClusterID to check pre and post upgrades across different clusters
-	kubectl, err := exec.LookPath("kubectl")
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to find kubectl")
-	}
-	out, err := exec.Command(kubectl, "get", "ns", "kube-system", "-o", "jsonpath='{.metadata.uid}'").Output()
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to find kubectl")
-	}
-	_ = string(out[:])
-	// machineID := string(out[:])
-
 	// use guid as InstallID
 	im.InstallID = ksuid.New().String()
 
