@@ -92,7 +92,7 @@ func DeployNFSMinio(ctx context.Context, clientset kubernetes.Interface, deployO
 	if err != nil {
 		return errors.Wrap(err, "failed to ensure nfs minio secret")
 	}
-	err = createMinioKeysSHAFile(ctx, clientset, secret, deployOptions, registryOptions)
+	err = writeMinioKeysSHAFile(ctx, clientset, secret, deployOptions, registryOptions)
 	if err != nil {
 		return errors.Wrap(err, "failed to create minio keys sha file")
 	}
@@ -603,7 +603,7 @@ func resetNFSMount(ctx context.Context, clientset kubernetes.Interface, deployOp
 	return nil
 }
 
-func createMinioKeysSHAFile(ctx context.Context, clientset kubernetes.Interface, minioSecret *corev1.Secret, deployOptions NFSDeployOptions, registryOptions kotsadmtypes.KotsadmOptions) error {
+func writeMinioKeysSHAFile(ctx context.Context, clientset kubernetes.Interface, minioSecret *corev1.Secret, deployOptions NFSDeployOptions, registryOptions kotsadmtypes.KotsadmOptions) error {
 	minioKeysSHA := getMinioKeysSHA(string(minioSecret.Data["MINIO_ACCESS_KEY"]), string(minioSecret.Data["MINIO_SECRET_KEY"]))
 
 	keysSHAPod, err := createNFSMinioKeysSHAPod(ctx, clientset, deployOptions, registryOptions, minioKeysSHA)
