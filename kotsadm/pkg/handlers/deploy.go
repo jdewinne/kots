@@ -101,10 +101,10 @@ func (h *Handler) DeployAppVersion(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
-			fmt.Println("+++____++++++++", currentVersion.PreflightResult)
-			err = updatePreflightsReportToReplicatedApp(license.Spec.LicenseID, appSlug, clusterID, currentVersion.Status, true)
+			//TODO FIND PREFLIGHT CHECK RESULT ---> currently hardcoded to true
+			err = updatePreflightsReportToReplicatedApp(license.Spec.LicenseID, appSlug, clusterID, sequence, request.IsSkipPreflights, currentVersion.Status, true)
 			if err != nil {
-				err = errors.Wrap(err, "failed to set app undeploy status")
+				err = errors.Wrap(err, "failed to update preflights reports")
 				logger.Error(err)
 				return
 			}
@@ -277,11 +277,15 @@ func (h *Handler) UpdateUndeployResult(w http.ResponseWriter, r *http.Request) {
 	return
 }
 
-func updatePreflightsReportToReplicatedApp(licenseID string, appSlug string, clusterID string, installStatus string, hasWarnOrErr bool) error {
+func updatePreflightsReportToReplicatedApp(licenseID string, appSlug string, clusterID string, sequence int, skipPreflights bool, installStatus string, hasWarnOrErr bool) error {
 	urlValues := url.Values{}
 
 	hasWarnOrErrToStr := fmt.Sprintf("%t", hasWarnOrErr)
+	sequenceToStr := strconv.Itoa(sequence)
+	skipPreflightsToStr := fmt.Sprintf("%t", skipPreflights)
 
+	urlValues.Set("sequence", sequenceToStr)
+	urlValues.Set("skipPreflights", skipPreflightsToStr)
 	urlValues.Set("installStatus", installStatus)
 	urlValues.Set("hasWarnOrErr", hasWarnOrErrToStr)
 
